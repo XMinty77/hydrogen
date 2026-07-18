@@ -24,12 +24,15 @@ namespace Hydrogen.Export;
 
 public static class GalleryCommand
 {
-    /// <summary>Camera presets from the spec: name → (azimuth°, elevation°).</summary>
-    private static readonly (string name, double az, double el)[] Views =
+    /// <summary>Camera presets from the spec: name → (azimuth°, elevation°,
+    /// distance in framing radii). The top view sits farther out: looking down
+    /// the z-axis, the orbital's equatorial footprint projects wider than in
+    /// the ¾ view, and 2.6× was measured to crop bright structure at n = 10.</summary>
+    private static readonly (string name, double az, double el, double dist)[] Views =
     [
-        ("q34", 35, 25),    // canonical ¾
-        ("side", 0, 8),     // profile of the polar structure
-        ("top", 35, 78),    // down the z-axis
+        ("q34", 35, 25, 2.6),    // canonical ¾
+        ("side", 0, 8, 2.6),     // profile of the polar structure
+        ("top", 35, 78, 3.1),    // down the z-axis
     ];
 
     public static int Run(string root, HorbAsset asset, PaletteSet palettes,
@@ -129,38 +132,39 @@ public static class GalleryCommand
 
                 // ---- 3D volumes -------------------------------------------------
                 byte[] Volume(bool real, int color, double az, double el,
-                              int integrator, bool halfCut) =>
-                    volumes.Render(new VolumeParams
+                              double distFactor, int integrator, bool halfCut)
+                {
+                    var cam = OrbitCam(az, el, distFactor * extent);
+                    return volumes.Render(new VolumeParams
                     {
                         Common = Common(real, color),
-                        CamPos = OrbitCam(az, el, 2.6 * extent).pos,
-                        CamRight = OrbitCam(az, el, 2.6 * extent).right,
-                        CamUp = OrbitCam(az, el, 2.6 * extent).up,
-                        CamFwd = OrbitCam(az, el, 2.6 * extent).fwd,
+                        CamPos = cam.pos, CamRight = cam.right,
+                        CamUp = cam.up, CamFwd = cam.fwd,
                         Integrator = integrator, Steps = steps,
                         ClipPlanes = halfCut
                             ? new[] { (0.0, -1.0, 0.0, 0.0) }   // keep y ≤ 0
                             : Array.Empty<(double, double, double, double)>(),
                     });
+                }
 
-                foreach (var (name, az, el) in Views)
+                foreach (var (name, az, el, dist) in Views)
                 {
                     Save(Path.Combine(dir, $"3d_mip_real_{name}.png"),
-                         Volume(true, 0, az, el, 0, false));
+                         Volume(true, 0, az, el, dist, 0, false));
                     Save(Path.Combine(dir, $"3d_mip_signed_{name}.png"),
-                         Volume(true, 1, az, el, 0, false));
+                         Volume(true, 1, az, el, dist, 0, false));
                 }
-                var (cAz, cEl) = (Views[0].az, Views[0].el);
+                var (cAz, cEl, cDist) = (Views[0].az, Views[0].el, Views[0].dist);
                 Save(Path.Combine(dir, "3d_ea_real_q34.png"),
-                     Volume(true, 0, cAz, cEl, 1, false));
+                     Volume(true, 0, cAz, cEl, cDist, 1, false));
                 Save(Path.Combine(dir, "3d_ea_signed_q34.png"),
-                     Volume(true, 1, cAz, cEl, 1, false));
+                     Volume(true, 1, cAz, cEl, cDist, 1, false));
                 Save(Path.Combine(dir, "3d_ea_real_cut.png"),
-                     Volume(true, 0, cAz, cEl, 1, true));
+                     Volume(true, 0, cAz, cEl, cDist, 1, true));
                 Save(Path.Combine(dir, "3d_ea_signed_cut.png"),
-                     Volume(true, 1, cAz, cEl, 1, true));
+                     Volume(true, 1, cAz, cEl, cDist, 1, true));
                 Save(Path.Combine(dir, "3d_mip_complex_q34.png"),
-                     Volume(false, 2, cAz, cEl, 0, false));
+                     Volume(false, 2, cAz, cEl, cDist, 0, false));
 
                 images += (l - m) % 2 == 0 ? 15 : 14;
             }
