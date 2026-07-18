@@ -1,171 +1,138 @@
 // =============================================================================
-// Program.cs — smoke test for the offline export host.
+// Program.cs — CLI entry point for the offline export host.
 // =============================================================================
 //
-// Purpose: prove out the three assumptions the whole export architecture rests
-// on, before any real rendering code is written:
+// Usage:
+//   dotnet run -- slice [options]        render one 2D cross-section PNG
 //
-//   1. We can create an OpenGL context headlessly (an invisible GLFW window on
-//      the workstation's X display) and it lands on the NVIDIA GPU, not on a
-//      software rasterizer.
-//   2. The desktop driver accepts shaders written in GLSL ES 3.00 ("#version
-//      300 es", via GL_ARB_ES3_compatibility) — the exact dialect WebGL2 uses.
-//      This is what lets the web demo and this exporter share identical shader
-//      files.
-//   3. We can render to an offscreen framebuffer, read the pixels back, and
-//      encode a correct (not vertically flipped) PNG.
+// Slice options (all optional):
+//   --state N,L,M       quantum numbers            (default 4,2,1)
+//   --mode real|complex                            (default real)
+//   --color ramp|signed|phase   (default: ramp for real, phase for complex)
+//   --plane xz|xy|yz    cutting plane              (default xz)
+//   --offset F          out-of-plane offset, a₀    (default 0)
+//   --extent F          half-width, a₀             (default: framing radius)
+//   --size W[xH]        output pixels              (default 1024)
+//   --gamma F           brightening exponent       (default 0.45)
+//   --value density|amplitude                      (default density)
+//   --ramp NAME         palette ramp name          (default accretion_tuned)
+//   --ramp-space oklab|srgb   stop interpolation   (default oklab)
+//   --no-dither         disable output dithering
+//   --out PATH          output file (default gallery/slices/<auto-name>.png)
 //
-// It renders a deliberately asymmetric test pattern — a hue wheel with radial
-// rings and a white marker square in the top-left corner — so that any
-// row-order or channel-order mistake is immediately visible in the output.
-//
-// Run:  dotnet run          (writes smoke_test.png next to the project)
+// Paths are resolved from the repo root (found by walking up to the directory
+// containing shaders/), so this works from any working directory.
 // =============================================================================
 
-using Silk.NET.Maths;
-using Silk.NET.OpenGL;
-using Silk.NET.Windowing;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
+using Hydrogen.Export;
+using Hydrogen.Export.Gl;
+using Hydrogen.Export.Horb;
+using Hydrogen.Export.Palettes;
+using Hydrogen.Export.Render;
 
-// Render size for the offscreen framebuffer. The window itself stays tiny and
-// invisible — it exists only to own a GL context.
-const int Width = 800;
-const int Height = 800;
-
-// --- Shaders (GLSL ES 3.00, the WebGL2 dialect) ------------------------------
-
-// Fullscreen triangle generated from gl_VertexID — no vertex buffer needed.
-// Vertices: (-1,-1), (3,-1), (-1,3) cover the whole viewport with one triangle.
-const string VertexSrc = @"#version 300 es
-void main() {
-    vec2 p = vec2(gl_VertexID == 1 ? 3.0 : -1.0,
-                  gl_VertexID == 2 ? 3.0 : -1.0);
-    gl_Position = vec4(p, 0.0, 1.0);
-}";
-
-// Test pattern: hue encodes azimuth (a stand-in for the future phase wheel),
-// cosine rings encode radius, and a white square sits in the *top-left* corner
-// so a vertical flip in the readback path cannot go unnoticed.
-const string FragmentSrc = @"#version 300 es
-precision highp float;
-out vec4 fragColor;
-uniform vec2 uRes;
-
-vec3 hsv2rgb(vec3 c) {
-    vec3 p = abs(fract(c.xxx + vec3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
-    return c.z * mix(vec3(1.0), clamp(p - 1.0, 0.0, 1.0), c.y);
+// ---------------------------------------------------------------------------
+// Locate the repo root and shared resources.
+// ---------------------------------------------------------------------------
+string root = AppContext.BaseDirectory;
+while (!Directory.Exists(Path.Combine(root, "shaders")))
+{
+    var parent = Directory.GetParent(root)
+        ?? throw new InvalidOperationException("repo root (shaders/) not found");
+    root = parent.FullName;
 }
 
-void main() {
-    vec2 uv = gl_FragCoord.xy / uRes * 2.0 - 1.0;
-    float r = length(uv);
-    float a = atan(uv.y, uv.x);                       // azimuth in (-pi, pi]
-    float hue = a / 6.28318530718 + 0.5;              // -> [0, 1)
-    vec3 col = hsv2rgb(vec3(hue, 1.0, smoothstep(1.0, 0.98, r)));
-    col *= 0.75 + 0.25 * cos(20.0 * r);               // radial rings
-    // Orientation marker: white square in the top-left corner of the *image*
-    // (gl_FragCoord's y axis points up, PNG rows go down — hence uRes.y - y).
-    if (gl_FragCoord.x < 40.0 && uRes.y - gl_FragCoord.y < 40.0)
-        col = vec3(1.0);
-    fragColor = vec4(col, 1.0);
-}";
-
-// --- Invisible window / GL context -------------------------------------------
-
-var opts = WindowOptions.Default with
+if (args.Length == 0 || args[0] != "slice")
 {
-    IsVisible = false,
-    Size = new Vector2D<int>(64, 64),
-    Title = "hydrogen export smoke test",
+    Console.Error.WriteLine("usage: dotnet run -- slice [options]   (see Program.cs header)");
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Parse options into a mutable bag, then validate.
+// ---------------------------------------------------------------------------
+var opt = new Dictionary<string, string>();
+var flags = new HashSet<string>();
+for (int i = 1; i < args.Length; i++)
+{
+    if (!args[i].StartsWith("--"))
+        throw new ArgumentException($"unexpected argument '{args[i]}'");
+    string key = args[i][2..];
+    if (key == "no-dither") flags.Add(key);
+    else opt[key] = args[++i];
+}
+string Get(string key, string fallback) => opt.GetValueOrDefault(key, fallback);
+
+int[] state = Get("state", "4,2,1").Split(',').Select(int.Parse).ToArray();
+if (state.Length != 3)
+    throw new ArgumentException("--state must be N,L,M");
+(int n, int l, int m) = (state[0], state[1], state[2]);
+
+bool realMode = Get("mode", "real") switch
+{
+    "real" => true,
+    "complex" => false,
+    var s => throw new ArgumentException($"unknown mode '{s}'"),
+};
+int colorMode = Get("color", realMode ? "ramp" : "phase") switch
+{
+    "ramp" => 0,
+    "signed" => 1,
+    "phase" => 2,
+    var s => throw new ArgumentException($"unknown color mode '{s}'"),
 };
 
-var window = Window.Create(opts);
-int exitCode = 1;
+string[] size = Get("size", "1024").Split('x');
+int width = int.Parse(size[0]);
+int height = size.Length > 1 ? int.Parse(size[1]) : width;
 
-// All GL work happens in Load (context is current there); then we close.
-window.Load += () =>
+// ---------------------------------------------------------------------------
+// Load resources and render.
+// ---------------------------------------------------------------------------
+var asset = HorbAsset.Load(Path.Combine(root, "assets", "orbitals.bin"));
+var palettes = PaletteSet.Load(Path.Combine(root, "assets", "palettes.json"));
+
+// Optional phase-wheel overrides (--phase-L / --phase-C / --phase-h0-deg),
+// for palette exploration without re-baking palettes.json.
+if (opt.TryGetValue("phase-L", out var pl)) palettes.PhaseL = float.Parse(pl);
+if (opt.TryGetValue("phase-C", out var pc)) palettes.PhaseC = float.Parse(pc);
+if (opt.TryGetValue("phase-h0-deg", out var ph))
+    palettes.PhaseH0 = float.Parse(ph) * MathF.PI / 180f;
+
+double extent = opt.TryGetValue("extent", out var extStr)
+    ? double.Parse(extStr)
+    : asset.FramingRadius(n);
+double offset = double.Parse(Get("offset", "0"));
+
+// Plane basis: axis-aligned planes here; arbitrary rotated planes are the same
+// three uniforms with rotated vectors (exercised by the web demo later).
+var (origin, axisU, axisV) = Get("plane", "xz") switch
 {
-    var gl = GL.GetApi(window);
-
-    // --- 1. Report what we actually got: driver, GPU, GLSL version. ---------
-    string renderer = gl.GetStringS(StringName.Renderer);
-    string version = gl.GetStringS(StringName.Version);
-    string glsl = gl.GetStringS(StringName.ShadingLanguageVersion);
-    Console.WriteLine($"RENDERER: {renderer}");
-    Console.WriteLine($"VERSION:  {version}");
-    Console.WriteLine($"GLSL:     {glsl}");
-
-    // --- 2. Compile the ES 3.00 shader pair on the desktop driver. ----------
-    uint Compile(ShaderType type, string src)
-    {
-        uint s = gl.CreateShader(type);
-        gl.ShaderSource(s, src);
-        gl.CompileShader(s);
-        gl.GetShader(s, ShaderParameterName.CompileStatus, out int ok);
-        if (ok == 0)
-            throw new Exception($"{type} compile failed:\n{gl.GetShaderInfoLog(s)}");
-        return s;
-    }
-
-    uint program = gl.CreateProgram();
-    gl.AttachShader(program, Compile(ShaderType.VertexShader, VertexSrc));
-    gl.AttachShader(program, Compile(ShaderType.FragmentShader, FragmentSrc));
-    gl.LinkProgram(program);
-    gl.GetProgram(program, ProgramPropertyARB.LinkStatus, out int linked);
-    if (linked == 0)
-        throw new Exception($"link failed:\n{gl.GetProgramInfoLog(program)}");
-    Console.WriteLine("ES 3.00 shader compiled and linked on desktop GL: OK");
-
-    // --- 3. Offscreen framebuffer at the target resolution. -----------------
-    uint fbo = gl.GenFramebuffer();
-    gl.BindFramebuffer(FramebufferTarget.Framebuffer, fbo);
-    uint tex = gl.GenTexture();
-    gl.BindTexture(TextureTarget.Texture2D, tex);
-    unsafe
-    {
-        gl.TexImage2D(TextureTarget.Texture2D, 0, InternalFormat.Rgba8,
-                      Width, Height, 0, PixelFormat.Rgba,
-                      PixelType.UnsignedByte, null);
-    }
-    gl.FramebufferTexture2D(FramebufferTarget.Framebuffer,
-                            FramebufferAttachment.ColorAttachment0,
-                            TextureTarget.Texture2D, tex, 0);
-    if (gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer)
-        != GLEnum.FramebufferComplete)
-        throw new Exception("framebuffer incomplete");
-
-    // --- Draw the fullscreen triangle. ---------------------------------------
-    // Core profile requires *some* VAO to be bound even with no attributes.
-    gl.BindVertexArray(gl.GenVertexArray());
-    gl.Viewport(0, 0, Width, Height);
-    gl.UseProgram(program);
-    gl.Uniform2(gl.GetUniformLocation(program, "uRes"), (float)Width, (float)Height);
-    gl.DrawArrays(PrimitiveType.Triangles, 0, 3);
-
-    // --- 4. Read back and save as PNG. ---------------------------------------
-    var pixels = new byte[Width * Height * 4];
-    gl.ReadPixels(0, 0, Width, Height, PixelFormat.Rgba,
-                  PixelType.UnsignedByte, (Span<byte>)pixels);
-
-    // glReadPixels returns rows bottom-up; PNG stores them top-down. Flip.
-    var flipped = new byte[pixels.Length];
-    int stride = Width * 4;
-    for (int y = 0; y < Height; y++)
-        Array.Copy(pixels, y * stride,
-                   flipped, (Height - 1 - y) * stride, stride);
-
-    using var image = Image.LoadPixelData<Rgba32>(flipped, Width, Height);
-    string outPath = Path.GetFullPath(
-        Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "smoke_test.png"));
-    image.SaveAsPng(outPath);
-    Console.WriteLine($"WROTE: {outPath}");
-
-    exitCode = renderer.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase)
-        ? 0
-        : 2; // context works but landed on the wrong device — investigate
-    window.Close();
+    "xz" => ((0.0, offset, 0.0), (extent, 0.0, 0.0), (0.0, 0.0, extent)),
+    "xy" => ((0.0, 0.0, offset), (extent, 0.0, 0.0), (0.0, extent, 0.0)),
+    "yz" => ((offset, 0.0, 0.0), (0.0, extent, 0.0), (0.0, 0.0, extent)),
+    var s => throw new ArgumentException($"unknown plane '{s}'"),
 };
 
-window.Run();
-return exitCode;
+var sliceParams = new SliceParams
+{
+    N = n, L = l, M = m,
+    RealMode = realMode,
+    ColorMode = colorMode,
+    Origin = origin, AxisU = axisU, AxisV = axisV,
+    Width = width, Height = height,
+    RampName = Get("ramp", "accretion_tuned"),
+    RampSpaceSrgb = Get("ramp-space", "oklab") == "srgb",
+    Gamma = double.Parse(Get("gamma", "0.45")),
+    ValueMode = Get("value", "density") == "amplitude" ? 1 : 0,
+    Dither = !flags.Contains("no-dither"),
+};
+
+string outPath = Get("out", Path.Combine(root, "gallery", "slices",
+    $"n{n}_l{l}_m{m}_{(realMode ? "real" : "complex")}_{Get("plane", "xz")}.png"));
+
+using var ctx = new OffscreenGl(Path.Combine(root, "shaders"));
+var renderer = new SliceRenderer(ctx, asset, palettes);
+var pixels = renderer.Render(sliceParams);
+Png.Write(outPath, pixels, width, height);
+Console.WriteLine($"wrote {outPath}");
+return 0;

@@ -21,9 +21,12 @@ export RadialTable, AngularTable, DisplayStats,
        bake_radial, bake_angular, display_stats,
        lookup_radial, lookup_angular
 export OrbitalAsset, bake_asset, write_asset, read_asset
+export srgb_to_linear, linear_to_srgb, srgb_to_oklab, oklab_to_linsrgb,
+       oklab_to_srgb, in_gamut, max_chroma, wheel_chroma, clamp_chroma
 
 include("wavefunction.jl")
 include("tables.jl")
 include("asset.jl")
+include("color.jl")
 
 end # module
