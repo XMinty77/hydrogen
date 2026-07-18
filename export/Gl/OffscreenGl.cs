@@ -119,12 +119,16 @@ public sealed class OffscreenGl : IDisposable
         return tex;
     }
 
-    /// <summary>Create an RGBA8 framebuffer of the given size and bind it.</summary>
+    /// <summary>Create an RGBA8 framebuffer of the given size and bind it.
+    /// The target texture is bound on a reserved scratch unit so creating a
+    /// render target can never silently replace a sampler binding made by a
+    /// renderer (units 0–2 carry the orbital/palette tables).</summary>
     public unsafe (uint fbo, uint tex) CreateRenderTarget(int width, int height)
     {
         uint fbo = Gl.GenFramebuffer();
         Gl.BindFramebuffer(FramebufferTarget.Framebuffer, fbo);
         uint tex = Gl.GenTexture();
+        Gl.ActiveTexture(TextureUnit.Texture7);
         Gl.BindTexture(TextureTarget.Texture2D, tex);
         Gl.TexImage2D(TextureTarget.Texture2D, 0, InternalFormat.Rgba8,
                       (uint)width, (uint)height, 0, PixelFormat.Rgba,

@@ -138,6 +138,14 @@ vec3 linearToSrgb(vec3 c) {
 
 vec3 oklabToSrgb(vec3 lab) { return linearToSrgb(oklabToLinearSrgb(lab)); }
 
+// Inverse transfer, for compositing gamma-encoded palette colors in linear RGB.
+vec3 srgbToLinear(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(c / 12.92,
+               pow((c + 0.055) / 1.055, vec3(2.4)),
+               step(0.04045, c));
+}
+
 // ---------------------------------------------------------------------------
 // Palettes.
 // ---------------------------------------------------------------------------
