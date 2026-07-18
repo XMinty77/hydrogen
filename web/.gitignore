@@ -1,0 +1,12 @@
+# dependencies / build outputs
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# runtime data copied from ../assets and ../shaders by scripts/sync-assets.mjs
+public/generated/
+
+# screenshot-harness output
+.shots/

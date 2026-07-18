@@ -32,7 +32,7 @@
 //   --fov F              vertical field of view, degrees (default 40)
 //   --integrator mip|ea                            (default mip)
 //   --steps N            ray samples               (default 600)
-//   --density F          EA extinction scale       (default 60)
+//   --density F          EA extinction scale       (default 300)
 //   --clip nx,ny,nz,d    half-space clip plane, repeatable up to twice;
 //                        keeps the side where n·p + d ≥ 0
 // =============================================================================

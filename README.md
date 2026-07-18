@@ -38,8 +38,11 @@ Not on PATH by default on this machine:
 ## Status
 
 - [x] Toolchain + scaffold + GL smoke test (ES 3.00 shaders confirmed on desktop GL, offscreen PNG readback works)
-- [ ] M1: physics core + validation + baked asset
-- [ ] M2: 2D slice renderer + palettes
-- [ ] M3: 3D raymarcher
-- [ ] M4: batch exports (stills, animations)
-- [ ] M5: web demo
+- [x] M1: physics core + validation + baked asset (614 tests; worst FP32 pipeline error 4.25e-6 of state peak)
+- [x] M2: 2D slice renderer + palettes (GPU vs CPU reference ≤ 0.56 LSB; OKLCH ramp + vivid phase wheel, user sign-off)
+- [x] M3: 3D raymarcher (MIP + emission–absorption, exact clip planes)
+- [x] M4: batch still exports — draft 1024² gallery, 3,205 images / 220 states in 2.1 min (`gallery/stills/index.html`); final resolution pinned at 4096²
+- [x] M5: web demo (`web/`, see its README; verified vs CPU reference ≤ 1 LSB)
+- [ ] Rendering-technique iteration with user feedback through the web demo (lit isosurfaces, shadowed EA, filmic tonemap, bloom …)
+- [ ] Final-resolution (4096²) gallery run after technique sign-off
+- [ ] Animations (2D moving cross-sections, 3D orbiting camera; deferred until after web-demo feedback)

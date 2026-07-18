@@ -64,3 +64,14 @@ The −m transforms are documented in the gallery index.
   → re-runs are byte-identical; the draft→final rerun changes resolution only.
 - **Draft pass**: 1024² (user-approved), then composition review, then the
   final-resolution run (resolution decided after the draft looks right).
+
+## Post-draft decisions (user, 2026-07-18)
+
+- **Final resolution pinned at 4096²** unless a desire for higher quality
+  arises. Drafts and iteration continue at 1024² (the 2.1-minute full-gallery
+  turnaround makes re-renders effectively free).
+- **Rendering-technique iteration deferred until after the web demo (M5)**:
+  judging the drafts from fixed angles proved hard — the interactive demo
+  gives every render type arbitrary viewpoints, so concrete per-technique
+  feedback will be formulated there. The final-resolution run waits for that
+  feedback loop to converge.

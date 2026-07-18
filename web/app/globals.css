@@ -1,0 +1,40 @@
+/* Minimal chrome: the canvas is the app. lil-gui brings its own styles. */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: #000;
+  color: #ccc;
+  font: 13px system-ui, sans-serif;
+  overflow: hidden;
+}
+
+canvas.view {
+  display: block;
+  touch-action: none; /* pointer events handle all gestures */
+}
+
+/* Default fullscreen mode; ?size=N switches to a fixed top-left canvas. */
+canvas.view-fill {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.stats {
+  position: fixed;
+  left: 8px;
+  bottom: 8px;
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 4px;
+  font: 12px ui-monospace, "Cascadia Mono", monospace;
+  pointer-events: none;
+  white-space: pre;
+}
