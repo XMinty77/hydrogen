@@ -51,9 +51,9 @@ while (!Directory.Exists(Path.Combine(root, "shaders")))
     root = parent.FullName;
 }
 
-if (args.Length == 0 || (args[0] != "slice" && args[0] != "volume"))
+if (args.Length == 0 || (args[0] != "slice" && args[0] != "volume" && args[0] != "gallery"))
 {
-    Console.Error.WriteLine("usage: dotnet run -- slice|volume [options]   (see Program.cs header)");
+    Console.Error.WriteLine("usage: dotnet run -- slice|volume|gallery [options]   (see Program.cs header)");
     return 1;
 }
 string command = args[0];
@@ -111,6 +111,11 @@ if (opt.TryGetValue("phase-L", out var pl)) palettes.PhaseL = float.Parse(pl);
 if (opt.TryGetValue("phase-C", out var pc)) palettes.PhaseC = float.Parse(pc);
 if (opt.TryGetValue("phase-h0-deg", out var ph))
     palettes.PhaseH0 = float.Parse(ph) * MathF.PI / 180f;
+
+// The gallery batch owns its own GL context and render loop (see
+// GalleryCommand.cs / docs/gallery-spec.md).
+if (command == "gallery")
+    return GalleryCommand.Run(root, asset, palettes, opt);
 
 // The base record every command extends with its geometry.
 var common = new CommonParams
