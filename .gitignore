@@ -1,0 +1,9 @@
+assets/
+gallery/
+*.user
+bin/
+obj/
+node_modules/
+dist/
+.vite/
+Manifest.toml
