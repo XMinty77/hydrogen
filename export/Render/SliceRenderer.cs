@@ -39,6 +39,13 @@ public sealed record SliceParams
     /// <summary>0: brightness from |ψ|² (density), 1: from |ψ| (amplitude).</summary>
     public int ValueMode { get; init; } = 0;
     public bool Dither { get; init; } = true;
+    /// <summary>Phase wheel: per-hue max chroma ("vivid") vs constant chroma.
+    /// Vivid + chroma-persistence 0.6 is the project default (user sign-off,
+    /// 2026-07-18: honest luminance, near-HSV punch).</summary>
+    public bool PhaseVivid { get; init; } = true;
+    /// <summary>Chroma fades as bright^pow (1 = with lightness, gamut-exact;
+    /// &lt; 1 = saturation persists into dark regions).</summary>
+    public double PhaseChromaPow { get; init; } = 0.6;
 }
 
 public sealed class SliceRenderer
@@ -47,6 +54,7 @@ public sealed class SliceRenderer
     private readonly HorbAsset _asset;
     private readonly PaletteSet _palettes;
     private readonly uint _program;
+    private readonly uint _phaseCmaxTex;
     private readonly Dictionary<(int n, int l), uint> _radialTex = new();
     private readonly Dictionary<(int l, int m), uint> _angularTex = new();
 
@@ -56,6 +64,7 @@ public sealed class SliceRenderer
         _asset = asset;
         _palettes = palettes;
         _program = ctx.CreateProgram("fullscreen.vert", "slice.frag");
+        _phaseCmaxTex = ctx.CreateTableTexture(palettes.PhaseCmax);
     }
 
     /// <summary>Render one slice; returns top-down RGBA8 bytes.</summary>
@@ -118,6 +127,11 @@ public sealed class SliceRenderer
         gl.Uniform1(Loc("uPhaseL"), _palettes.PhaseL);
         gl.Uniform1(Loc("uPhaseC"), _palettes.PhaseC);
         gl.Uniform1(Loc("uPhaseH0"), _palettes.PhaseH0);
+        gl.ActiveTexture(TextureUnit.Texture2);
+        gl.BindTexture(TextureTarget.Texture2D, _phaseCmaxTex);
+        gl.Uniform1(Loc("uPhaseCmaxTab"), 2);
+        gl.Uniform1(Loc("uPhaseVivid"), p.PhaseVivid ? 1 : 0);
+        gl.Uniform1(Loc("uPhaseChromaPow"), (float)p.PhaseChromaPow);
         gl.Uniform1(Loc("uDitherAmp"), p.Dither ? 1.0f / 255.0f : 0.0f);
 
         // --- plane geometry --------------------------------------------------

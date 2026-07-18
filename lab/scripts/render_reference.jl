@@ -40,8 +40,18 @@ function render_slice(asset, palettes, n, l, m, real_mode, color_mode,
     ramp = palettes.ramps[:accretion_tuned]
     positions = Float32.(ramp.positions)
     labs = [Float32.(c) for c in ramp.oklab]
-    phase_L, phase_C, phase_h0 =
-        Float32(palettes.phase.L), Float32(palettes.phase.C), Float32(palettes.phase.h0)
+    phase_L, phase_h0 = Float32(palettes.phase.L), Float32(palettes.phase.h0)
+    # Vivid wheel (the project default): per-hue max chroma via the 257-sample
+    # cyclic table, with chroma persistence bright^0.6 — mirror of phaseColor
+    # in common.glsl with uPhaseVivid = true.
+    cmax = Float32.(palettes.phase.cmax)
+    chroma_pow = 0.6f0
+    function phase_chroma(hue::Float32)
+        f = mod(hue / (2.0f0 * Float32(π)), 1.0f0) * Float32(length(cmax) - 1)
+        i0 = min(unsafe_trunc(Int, f), length(cmax) - 2)
+        t = f - Float32(i0)
+        return (1.0f0 - t) * cmax[i0 + 1] + t * cmax[i0 + 2]
+    end
 
     # Piecewise-linear ramp in OKLab (mirror of rampStops in common.glsl).
     function ramp_lab(t::Float32)
@@ -95,9 +105,9 @@ function render_slice(asset, palettes, n, l, m, real_mode, color_mode,
 
             # Color (Float64 conversion; ≤1 LSB from the GPU's Float32 path).
             if color_mode == 2
-                phase = atan(ψim, ψre)
-                lab = (phase_L, phase_C * cos(phase + phase_h0),
-                       phase_C * sin(phase + phase_h0)) .* bright
+                hue = atan(ψim, ψre) + phase_h0
+                C = phase_chroma(hue) * bright^chroma_pow
+                lab = (phase_L * bright, C * cos(hue), C * sin(hue))
                 img[row, col] = oklab_to_srgb(lab...)
             elseif color_mode == 1
                 lab = ramp_lab(bright)

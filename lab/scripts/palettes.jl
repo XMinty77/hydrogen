@@ -116,6 +116,15 @@ mkpath(joinpath(root, "gallery", "palettes"))
 ramp_json(positions, srgb, lab) =
     (; positions, srgb = [collect(c) for c in srgb], oklab = [collect(c) for c in lab])
 
+# Per-hue maximum chroma at the wheel's lightness — the "vivid" wheel: every
+# hue as saturated as sRGB permits while lightness stays perfectly flat.
+# 257 samples over [0, 2π] with the last duplicating the first, so a clamped
+# linear lookup behaves as cyclic; 0.985 keeps linear interpolation between
+# samples from overshooting the gamut boundary near its cusps.
+const CMAX_SAMPLES = 257
+cmax = [0.985 * max_chroma(PHASE_L, 2π * (k % (CMAX_SAMPLES - 1)) / (CMAX_SAMPLES - 1))
+        for k in 0:(CMAX_SAMPLES - 1)]
+
 json = (;
     ramps = (;
         accretion = ramp_json([p for (p, _) in STOPS],
@@ -125,7 +134,7 @@ json = (;
                                     [oklab_to_srgb(lab...) for (_, lab) in tuned],
                                     [lab for (_, lab) in tuned]),
     ),
-    phase = (; L = PHASE_L, C = PHASE_C, h0 = PHASE_H0),
+    phase = (; L = PHASE_L, C = PHASE_C, h0 = PHASE_H0, cmax),
 )
 open(joinpath(root, "assets", "palettes.json"), "w") do io
     JSON3.pretty(io, json)

@@ -57,7 +57,7 @@ for (int i = 1; i < args.Length; i++)
     if (!args[i].StartsWith("--"))
         throw new ArgumentException($"unexpected argument '{args[i]}'");
     string key = args[i][2..];
-    if (key == "no-dither") flags.Add(key);
+    if (key is "no-dither" or "phase-constant") flags.Add(key);
     else opt[key] = args[++i];
 }
 string Get(string key, string fallback) => opt.GetValueOrDefault(key, fallback);
@@ -125,6 +125,8 @@ var sliceParams = new SliceParams
     Gamma = double.Parse(Get("gamma", "0.45")),
     ValueMode = Get("value", "density") == "amplitude" ? 1 : 0,
     Dither = !flags.Contains("no-dither"),
+    PhaseVivid = !flags.Contains("phase-constant"),
+    PhaseChromaPow = double.Parse(Get("phase-chroma-pow", "0.6")),
 };
 
 string outPath = Get("out", Path.Combine(root, "gallery", "slices",

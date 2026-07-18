@@ -17,6 +17,9 @@ public sealed class PaletteSet
     public required float PhaseL { get; set; }
     public required float PhaseC { get; set; }
     public required float PhaseH0 { get; set; }
+    /// <summary>Per-hue max sRGB chroma at PhaseL, 257 samples over [0, 2π]
+    /// (last repeats the first for cyclic lookup) — the "vivid" wheel data.</summary>
+    public required float[] PhaseCmax { get; init; }
 
     public static PaletteSet Load(string path)
     {
@@ -45,6 +48,8 @@ public sealed class PaletteSet
             PhaseL = phase.GetProperty("L").GetSingle(),
             PhaseC = phase.GetProperty("C").GetSingle(),
             PhaseH0 = phase.GetProperty("h0").GetSingle(),
+            PhaseCmax = phase.GetProperty("cmax").EnumerateArray()
+                             .Select(x => x.GetSingle()).ToArray(),
         };
     }
 }

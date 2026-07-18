@@ -51,6 +51,15 @@ uniform bool uRampSpaceSrgb;         // true: lerp in gamma sRGB (prototype
 uniform float uPhaseL;               // phase wheel: OKLCH lightness…
 uniform float uPhaseC;               // …chroma (inside gamut at every hue)…
 uniform float uPhaseH0;              // …and hue of phase 0 (radians)
+uniform bool uPhaseVivid;            // true: per-hue max chroma (uPhaseCmaxTab)
+                                     // instead of the constant uPhaseC
+uniform sampler2D uPhaseCmaxTab;     // R32F 257×1: max sRGB chroma per hue at
+                                     // uPhaseL; last texel repeats the first
+                                     // so clamped lookup acts cyclic
+uniform float uPhaseChromaPow;       // chroma fades as brightᵖᵒʷ (1 = with the
+                                     // lightness — exactly gamut-safe; < 1 =
+                                     // saturation persists into dark regions,
+                                     // relying on the final gamut clamp)
 uniform float uDitherAmp;            // output dither amplitude (1/255 for 8-bit
                                      // targets, 0 for float/16-bit targets)
 
@@ -163,13 +172,18 @@ vec3 rampColorSigned(float t, float sgn) {
     return oklabToSrgb(lab);
 }
 
-// Phase (radians) + brightness → sRGB: a constant-lightness OKLCH hue wheel,
-// with the whole Lab vector scaled by brightness so magnitude fades colors to
-// the background uniformly (chroma dies with lightness — no garish dark hues).
+// Phase (radians) + brightness → sRGB: a constant-lightness OKLCH hue wheel.
+// Lightness scales with brightness; chroma scales with brightᵘᴾʰᵃˢᵉᶜʰʳᵒᵐᵃᴾᵒʷ.
+// At pow = 1 the whole Lab vector scales together, which is *exactly*
+// gamut-preserving (linear RGB scales by the cube); at pow < 1 saturation
+// lingers in dark regions and the final clamp absorbs mild excursions.
 vec3 phaseColor(float phase, float bright) {
-    vec3 lab = vec3(uPhaseL,
-                    uPhaseC * cos(phase + uPhaseH0),
-                    uPhaseC * sin(phase + uPhaseH0)) * bright;
+    float hue = phase + uPhaseH0;
+    float C = uPhaseVivid
+        ? lookupTable(uPhaseCmaxTab, fract(hue / (2.0 * PI)))
+        : uPhaseC;
+    C *= pow(bright, uPhaseChromaPow);
+    vec3 lab = vec3(uPhaseL * bright, C * cos(hue), C * sin(hue));
     return oklabToSrgb(lab);
 }
 
