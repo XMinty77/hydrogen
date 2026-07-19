@@ -6,7 +6,13 @@
 // <view>.frag concatenated as one fragment source), same table textures
 // (R32F width×1, NEAREST — lookups are texelFetch + explicit mix, so results
 // are bit-comparable with the offline C# host), same uniform semantics
-// (documented once, in shaders/common.glsl).
+// (documented once, in shaders/common.glsl + the view shaders).
+//
+// Iteration 5 adds two more view programs — pathtrace.frag (progressive
+// Monte Carlo, resolved by display.frag from an RGBA32F accumulation
+// ping-pong) and eikonal.frag (refractive rendering) — on the same contract.
+// The C# host has not grown these yet (web-first prototyping round); nothing
+// here changes what it compiles.
 //
 // The heavy lifting (program introspection, uniform type dispatch, texture
 // creation) is delegated to twgl; this file only encodes the project's
@@ -25,8 +31,8 @@ import type { PaletteSet } from "./palettes";
 import type { Vec3 } from "./vec3";
 
 /** Parameters shared by every render pass — mirror of CommonParams in
- * OrbitalRenderer.cs. View-specific geometry rides in SliceParams /
- * VolumeParams below. */
+ * OrbitalRenderer.cs. View-specific geometry rides in the per-view param
+ * interfaces below. */
 export interface CommonParams {
   n: number;
   l: number;
@@ -39,6 +45,10 @@ export interface CommonParams {
   gamma: number;
   /** 0: brightness from |ψ|² (density), 1: from |ψ| (amplitude). */
   valueMode: number;
+  /** Extra range compression before gamma: 0 off, 1 log, 2 asinh. */
+  compressMode: number;
+  /** Compression strength k (only read when compressMode > 0). */
+  compressK: number;
   dither: boolean;
   phaseVivid: boolean;
   phaseChromaPow: number;
@@ -51,32 +61,113 @@ export interface SliceParams {
   axisV: Vec3;
 }
 
-export interface VolumeParams {
-  common: CommonParams;
+/** Perspective camera + the display transform — shared by every 3D view. */
+export interface CameraParams {
   camPos: Vec3;
   camRight: Vec3;
   camUp: Vec3;
   camFwd: Vec3;
   fovYDeg: number;
-  /** 0 MIP, 1 emission–absorption, 2 shadowed scattering (EA + key light). */
+  /** 0 linearToSrgb clamp, 1 AgX filmic (HDR integrators only). */
+  tonemap: number;
+  /** EV shift (2^EV) on the HDR accumulation before the transform. */
+  exposureEv: number;
+  /** Up to two half-space planes (nx, ny, nz, w): keep n·p + w ≥ 0. */
+  clipPlanes: [number, number, number, number][];
+}
+
+/** Key light + phase anisotropy — shared by scatter, shading, path tracer. */
+export interface LightParams {
+  /** Direction in the orbit camera's spherical convention (degrees). */
+  lightAzDeg: number;
+  lightElDeg: number;
+  lightGain: number;
+  /** Henyey–Greenstein anisotropy g ∈ (−1, 1); 0 = isotropic. */
+  hgG: number;
+}
+
+/** Local-illumination overlay (volume.frag integrators 1–2 and 4). */
+export interface ShadeParams {
+  /** 0 off, 1 Lambert, 2 Blinn–Phong, 3 GGX/Fresnel. */
+  shadeModel: number;
+  shadeDiffuse: number;
+  shadeSpec: number;
+  shadeRough: number;
+  shadeF0: number;
+  /** Gradient-confidence scale (how "surface-like" a sample must be). */
+  shadeConf: number;
+  /** Finite-difference half-step for gradients, fraction of rMax. */
+  gradDelta: number;
+}
+
+export interface VolumeParams {
+  common: CommonParams;
+  camera: CameraParams;
+  light: LightParams;
+  shade: ShadeParams;
+  /** 0 MIP, 1 EA, 2 ambient multi-scatter, 3 MIDA, 4 isosurfaces. */
   integrator: number;
   steps: number;
   densityScale: number;
   opacityPow: number;
   emissionGain: number;
-  /** 0 linearToSrgb clamp, 1 AgX filmic — EA/scatter output only. */
-  tonemap: number;
-  /** EV shift (2^EV) on the HDR accumulation before the tonemap. */
-  exposureEv: number;
-  /** Key-light direction, orbit-camera spherical convention (degrees). */
-  lightAzDeg: number;
-  lightElDeg: number;
-  lightGain: number;
+  // -- scatter (integrator 2) --
   shadowSteps: number;
-  /** Shadow-ray extinction scale, decoupled from densityScale (see shader). */
   shadowDensity: number;
-  /** Up to two half-space planes (nx, ny, nz, w): keep n·p + w ≥ 0. */
-  clipPlanes: [number, number, number, number][];
+  octaves: number;
+  octaveGain: number;
+  octaveExt: number;
+  ambientGain: number;
+  ambientDirs: number;
+  ambientRadius: number;
+  ambientDensity: number;
+  // -- MIDA (integrator 3) --
+  midaGamma: number;
+  // -- isosurfaces (integrator 4) --
+  isoLevel: number;
+  isoCount: number;
+  isoSpacing: number;
+  isoAlpha: number;
+  isoEmission: number;
+  isoRim: number;
+}
+
+export interface PathtraceParams {
+  common: CommonParams;
+  camera: CameraParams;
+  light: LightParams;
+  densityScale: number;
+  opacityPow: number;
+  emissionGain: number;
+  maxBounces: number;
+  albedo: number;
+  scatterTint: number;
+  sppFrame: number;
+  /** Thin-lens aperture radius, world (a₀); 0 = pinhole. */
+  aperture: number;
+  /** Focal distance along camFwd, world (a₀). */
+  focusDist: number;
+  /** Environment: 0 black, 1 uniform, 2 studio, 3 hue sphere, 4 checker. */
+  envMode: number;
+  envGain: number;
+}
+
+export interface EikonalParams {
+  common: CommonParams;
+  camera: CameraParams;
+  steps: number;
+  iorScale: number;
+  /** 0 power map, 1 logarithmic map. */
+  eikMap: number;
+  eikPow: number;
+  eikLogK: number;
+  absorb: number;
+  emission: number;
+  dispersion: number;
+  envMode: number;
+  envGain: number;
+  /** Finite-difference half-step, fraction of rMax (index gradients). */
+  gradDelta: number;
 }
 
 const MAX_STOPS = 8;
@@ -87,10 +178,27 @@ async function fetchText(url: string): Promise<string> {
   return res.text();
 }
 
+function lightDirOf(l: LightParams): Vec3 {
+  const az = (l.lightAzDeg * Math.PI) / 180;
+  const el = (l.lightElDeg * Math.PI) / 180;
+  return [Math.cos(el) * Math.cos(az), Math.cos(el) * Math.sin(az), Math.sin(el)];
+}
+
 export class OrbitalRenderer {
   private readonly radialTex = new Map<string, WebGLTexture>();
   private readonly angularTex = new Map<string, WebGLTexture>();
   private readonly phaseCmaxTex: WebGLTexture;
+
+  // Path-tracer accumulation: two RGBA32F targets ping-ponged each pass
+  // (read previous sum, write previous + new samples). Rebuilt on resize.
+  private accumFbi: [twgl.FramebufferInfo, twgl.FramebufferInfo] | null = null;
+  private accumW = 0;
+  private accumH = 0;
+  private accumRead = 0; // index of the buffer currently holding the sum
+  private accumFrames = 0; // passes since the last reset
+  private accumSamples = 0; // total samples per pixel accumulated
+  /** True when RGBA32F render targets are supported (EXT_color_buffer_float). */
+  readonly floatRenderable: boolean;
 
   private constructor(
     readonly gl: WebGL2RenderingContext,
@@ -98,28 +206,48 @@ export class OrbitalRenderer {
     readonly palettes: PaletteSet,
     private readonly slicePi: twgl.ProgramInfo,
     private readonly volumePi: twgl.ProgramInfo,
+    private readonly pathtracePi: twgl.ProgramInfo,
+    private readonly eikonalPi: twgl.ProgramInfo,
+    private readonly displayPi: twgl.ProgramInfo,
   ) {
     this.phaseCmaxTex = this.createTableTexture(palettes.phaseCmax);
+    this.floatRenderable = gl.getExtension("EXT_color_buffer_float") !== null;
   }
 
-  /** Fetch the shared shader sources and compile both view programs. */
+  /** Fetch the shared shader sources and compile all view programs. */
   static async create(
     gl: WebGL2RenderingContext,
     asset: HorbAsset,
     palettes: PaletteSet,
     shaderBase: string,
   ): Promise<OrbitalRenderer> {
-    const [vert, prelude, common, slice, volume] = await Promise.all(
-      ["fullscreen.vert", "prelude.glsl", "common.glsl", "slice.frag", "volume.frag"].map(
-        (f) => fetchText(`${shaderBase}/${f}`),
-      ),
-    );
+    const files = [
+      "fullscreen.vert",
+      "prelude.glsl",
+      "common.glsl",
+      "slice.frag",
+      "volume.frag",
+      "pathtrace.frag",
+      "eikonal.frag",
+      "display.frag",
+    ];
+    const [vert, prelude, common, slice, volume, pathtrace, eikonal, display] =
+      await Promise.all(files.map((f) => fetchText(`${shaderBase}/${f}`)));
     const compile = (viewFrag: string) => {
       const pi = twgl.createProgramInfo(gl, [vert, prelude + common + viewFrag]);
       if (!pi) throw new Error("shader compile/link failed (see console)");
       return pi;
     };
-    return new OrbitalRenderer(gl, asset, palettes, compile(slice), compile(volume));
+    return new OrbitalRenderer(
+      gl,
+      asset,
+      palettes,
+      compile(slice),
+      compile(volume),
+      compile(pathtrace),
+      compile(eikonal),
+      compile(display),
+    );
   }
 
   /** R32F width×1 table texture, NEAREST/CLAMP — the same layout the C# host
@@ -145,7 +273,7 @@ export class OrbitalRenderer {
     return framingRadius(this.asset, n);
   }
 
-  /** Everything shared between the two passes — mirror of UploadCommon. */
+  /** Everything shared between passes — mirror of UploadCommon. */
   private commonUniforms(p: CommonParams): Record<string, unknown> {
     const radial = this.asset.radial.get(radialKey(p.n, p.l));
     if (!radial) throw new Error(`no radial table for n=${p.n}, l=${p.l}`);
@@ -183,6 +311,8 @@ export class OrbitalRenderer {
       uQ999: stats.q999,
       uGamma: p.gamma,
       uValueMode: p.valueMode,
+      uCompressMode: p.compressMode,
+      uCompressK: p.compressK,
       uRampColor: rampColor,
       uRampPos: rampPos,
       uRampN: ramp.positions.length,
@@ -197,9 +327,31 @@ export class OrbitalRenderer {
     };
   }
 
-  private draw(pi: twgl.ProgramInfo, uniforms: Record<string, unknown>) {
+  /** Camera basis, projection, display transform, clip planes. */
+  private cameraUniforms(c: CameraParams, aspect: number): Record<string, unknown> {
+    const clip = new Float32Array(8);
+    c.clipPlanes.forEach((p, i) => clip.set(p, 4 * i));
+    return {
+      uCamPos: c.camPos,
+      uCamRight: c.camRight,
+      uCamUp: c.camUp,
+      uCamFwd: c.camFwd,
+      uTanHalfFov: Math.tan((c.fovYDeg * Math.PI) / 360),
+      uAspect: aspect,
+      uTonemap: c.tonemap,
+      uExposure: c.exposureEv,
+      uClipPlane: clip,
+      uClipCount: Math.min(c.clipPlanes.length, 2),
+    };
+  }
+
+  private draw(
+    pi: twgl.ProgramInfo,
+    uniforms: Record<string, unknown>,
+    fb: twgl.FramebufferInfo | null = null,
+  ) {
     const gl = this.gl;
-    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    twgl.bindFramebufferInfo(gl, fb); // null ⇒ canvas + full viewport
     gl.useProgram(pi.program);
     twgl.setUniforms(pi, uniforms);
     gl.drawArrays(gl.TRIANGLES, 0, 3); // fullscreen.vert needs no buffers
@@ -216,33 +368,145 @@ export class OrbitalRenderer {
 
   renderVolume(p: VolumeParams) {
     const gl = this.gl;
-    const clip = new Float32Array(8);
-    p.clipPlanes.forEach((c, i) => clip.set(c, 4 * i));
     this.draw(this.volumePi, {
       ...this.commonUniforms(p.common),
-      uCamPos: p.camPos,
-      uCamRight: p.camRight,
-      uCamUp: p.camUp,
-      uCamFwd: p.camFwd,
-      uTanHalfFov: Math.tan((p.fovYDeg * Math.PI) / 360),
-      uAspect: gl.drawingBufferWidth / gl.drawingBufferHeight,
+      ...this.cameraUniforms(p.camera, gl.drawingBufferWidth / gl.drawingBufferHeight),
       uIntegrator: p.integrator,
       uSteps: p.steps,
       uDensityScale: p.densityScale,
       uOpacityPow: p.opacityPow,
       uEmissionGain: p.emissionGain,
-      uTonemap: p.tonemap,
-      uExposure: p.exposureEv,
-      uLightDir: (() => {
-        const az = (p.lightAzDeg * Math.PI) / 180;
-        const el = (p.lightElDeg * Math.PI) / 180;
-        return [Math.cos(el) * Math.cos(az), Math.cos(el) * Math.sin(az), Math.sin(el)];
-      })(),
-      uLightGain: p.lightGain,
+      uLightDir: lightDirOf(p.light),
+      uLightGain: p.light.lightGain,
+      uHgG: p.light.hgG,
       uShadowSteps: p.shadowSteps,
       uShadowDensity: p.shadowDensity,
-      uClipPlane: clip,
-      uClipCount: Math.min(p.clipPlanes.length, 2),
+      uOctaves: p.octaves,
+      uOctaveGain: p.octaveGain,
+      uOctaveExt: p.octaveExt,
+      uAmbientGain: p.ambientGain,
+      uAmbientDirs: p.ambientDirs,
+      uAmbientRadius: p.ambientRadius,
+      uAmbientDensity: p.ambientDensity,
+      uMidaGamma: p.midaGamma,
+      uIsoLevel: p.isoLevel,
+      uIsoCount: p.isoCount,
+      uIsoSpacing: p.isoSpacing,
+      uIsoAlpha: p.isoAlpha,
+      uIsoEmission: p.isoEmission,
+      uIsoRim: p.isoRim,
+      uShadeModel: p.shade.shadeModel,
+      uShadeDiffuse: p.shade.shadeDiffuse,
+      uShadeSpec: p.shade.shadeSpec,
+      uShadeRough: p.shade.shadeRough,
+      uShadeF0: p.shade.shadeF0,
+      uShadeConf: p.shade.shadeConf,
+      uGradDelta: p.shade.gradDelta,
+    });
+  }
+
+  renderEikonal(p: EikonalParams) {
+    const gl = this.gl;
+    this.draw(this.eikonalPi, {
+      ...this.commonUniforms(p.common),
+      ...this.cameraUniforms(p.camera, gl.drawingBufferWidth / gl.drawingBufferHeight),
+      uSteps: p.steps,
+      uIorScale: p.iorScale,
+      uEikMap: p.eikMap,
+      uEikPow: p.eikPow,
+      uEikLogK: p.eikLogK,
+      uEikAbsorb: p.absorb,
+      uEikEmission: p.emission,
+      uDispersion: p.dispersion,
+      uEnvMode: p.envMode,
+      uEnvGain: p.envGain,
+      uGradDelta: p.gradDelta,
+    });
+  }
+
+  // ------------------------------------------------------------------ path
+  // tracing: progressive accumulation. Call pathtraceSample once per animation
+  // frame; it adds p.sppFrame samples and presents the running mean. The host
+  // calls resetAccum whenever anything the image depends on changes.
+
+  /** Samples per pixel accumulated since the last reset. */
+  get pathtraceSamples(): number {
+    return this.accumSamples;
+  }
+
+  resetAccum() {
+    this.accumFrames = 0;
+    this.accumSamples = 0;
+  }
+
+  private ensureAccum(w: number, h: number) {
+    if (this.accumFbi && this.accumW === w && this.accumH === h) return;
+    const gl = this.gl;
+    const attach = [
+      {
+        internalFormat: gl.RGBA32F,
+        format: gl.RGBA,
+        type: gl.FLOAT,
+        min: gl.NEAREST,
+        mag: gl.NEAREST,
+        wrap: gl.CLAMP_TO_EDGE,
+      },
+    ];
+    this.accumFbi = [
+      twgl.createFramebufferInfo(gl, attach, w, h),
+      twgl.createFramebufferInfo(gl, attach, w, h),
+    ];
+    this.accumW = w;
+    this.accumH = h;
+    this.resetAccum();
+  }
+
+  pathtraceSample(p: PathtraceParams) {
+    const gl = this.gl;
+    if (!this.floatRenderable)
+      throw new Error("path tracing needs EXT_color_buffer_float");
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    this.ensureAccum(w, h);
+    const [a, b] = this.accumFbi!;
+    const read = this.accumRead === 0 ? a : b;
+    const write = this.accumRead === 0 ? b : a;
+
+    this.draw(
+      this.pathtracePi,
+      {
+        ...this.commonUniforms({ ...p.common, dither: false }),
+        ...this.cameraUniforms(p.camera, w / h),
+        uPrevAccum: read.attachments[0],
+        uFrameIndex: this.accumFrames,
+        uSppFrame: p.sppFrame,
+        uResolution: [w, h],
+        uDensityScale: p.densityScale,
+        uOpacityPow: p.opacityPow,
+        uEmissionGain: p.emissionGain,
+        uLightDir: lightDirOf(p.light),
+        uLightGain: p.light.lightGain,
+        uHgG: p.light.hgG,
+        uMaxBounces: p.maxBounces,
+        uAlbedo: p.albedo,
+        uScatterTint: p.scatterTint,
+        uAperture: p.aperture,
+        uFocusDist: p.focusDist,
+        uEnvMode: p.envMode,
+        uEnvGain: p.envGain,
+      },
+      write,
+    );
+    this.accumRead = 1 - this.accumRead;
+    this.accumFrames += 1;
+    this.accumSamples += p.sppFrame;
+
+    // Resolve the running mean to the canvas (exposure + tonemap + dither).
+    this.draw(this.displayPi, {
+      ...this.commonUniforms(p.common),
+      uAccum: write.attachments[0],
+      uTonemap: p.camera.tonemap,
+      uExposure: p.camera.exposureEv,
     });
   }
 }

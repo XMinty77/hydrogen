@@ -17,7 +17,7 @@ One renderer, three delivery modes:
 | `lab/`     | Julia           | The single physics implementation (FP64/BigFloat). Bakes 1D tables of R_nl and normalized P_lm into a compact binary asset; hosts the numerical-validation harness and palette design. |
 | `shaders/` | GLSL ES 3.00    | The single renderer codebase. Runs unmodified on desktop GL (via `GL_ARB_ES3_compatibility`) and WebGL2. |
 | `export/`  | C# (Silk.NET)   | Offline exports: high-resolution stills and ffmpeg animations, rendered offscreen on the workstation GPU. |
-| `web/`     | TypeScript      | Interactive demo (Next.js static export): 2D arbitrary cross-sections, 3D volumetric rendering with camera-locked clip planes, FPS explorer. |
+| `web/`     | TypeScript      | Interactive demo (Next.js static export): 2D arbitrary cross-sections; 3D rendering via MIP, emission–absorption, ambient multi-scattering, MIDA, emissive isosurfaces, volumetric path tracing, and eikonal refraction; clip planes, FPS explorer. |
 
 **Why 1D tables instead of 3D volumes:** ψ is separable, so the renderer
 reconstructs it exactly from two 1D texture fetches and a `sincos` —

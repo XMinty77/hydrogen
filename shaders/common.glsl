@@ -38,6 +38,17 @@ uniform bool uRealMode;          // real (textbook) vs complex (CS) harmonics
 uniform float uQ999;             // |ψ|² display-normalization quantile
 uniform float uGamma;            // brightening exponent (< 1 lifts faint tails)
 uniform int uValueMode;          // 0: density |ψ|², 1: amplitude |ψ|
+uniform int uCompressMode;       // extra range compression applied to the
+                                 // normalized value BEFORE the gamma pow —
+                                 // 0 off (the certified default), 1 log:
+                                 // log(1+k·v)/log(1+k), 2 asinh:
+                                 // asinh(k·v)/asinh(k). Both are exact
+                                 // identities at k→0 and approach a hard
+                                 // logarithmic lift as k grows; designed for
+                                 // integrators that key on *value ordering*
+                                 // (MIDA) or need faint-tail structure
+                                 // without the gamma pow's slope blowup at 0.
+uniform float uCompressK;        // compression strength k (≈1 subtle, ≫1 hard)
 
 // ---------------------------------------------------------------------------
 // Color (assets/palettes.json → uniforms).
@@ -113,7 +124,10 @@ vec2 evalPsi(vec3 p) {
 float brightnessOf(vec2 psi) {
     float d = dot(psi, psi);                      // |ψ|²
     float v = uValueMode == 0 ? d / uQ999 : sqrt(d / uQ999);
-    return pow(clamp(v, 0.0, 1.0), uGamma);
+    v = clamp(v, 0.0, 1.0);
+    if (uCompressMode == 1)      v = log(1.0 + uCompressK * v) / log(1.0 + uCompressK);
+    else if (uCompressMode == 2) v = asinh(uCompressK * v) / asinh(uCompressK);
+    return pow(v, uGamma);
 }
 
 // ---------------------------------------------------------------------------
@@ -249,4 +263,289 @@ vec3 phaseColor(float phase, float bright) {
 vec3 dither(vec3 color, vec2 fragCoord) {
     float ign = fract(52.9829189 * fract(dot(fragCoord, vec2(0.06711056, 0.00583715))));
     return color + (ign - 0.5) * uDitherAmp;
+}
+
+// ============================================================================
+// Volumetric technique library (iteration 5).
+//
+// Shared by every 3D view shader (volume.frag, pathtrace.frag, eikonal.frag):
+// the perspective camera, the clipped domain, field gradients, the stochastic
+// toolkit (RNG, Henyey–Greenstein), procedural environment light, linear-RGB
+// emission colors, and the local-illumination models. slice.frag also includes
+// this file (single-concatenation contract) but uses none of it — unused
+// uniforms/functions cost nothing after link.
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// Shared 3D-view uniforms. (Declared here so all view shaders agree on their
+// semantics; hosts keep setting them by name exactly as before.)
+// ---------------------------------------------------------------------------
+uniform int   uColorMode;      // 0 ramp, 1 signed (real), 2 phase (complex)
+uniform vec3  uCamPos;         // camera position, world (a₀)
+uniform vec3  uCamRight;       // orthonormal camera basis…
+uniform vec3  uCamUp;
+uniform vec3  uCamFwd;
+uniform float uTanHalfFov;     // tan(vertical FOV / 2)
+uniform float uAspect;         // width / height
+uniform vec4  uClipPlane[2];   // half-spaces: keep where dot(n, p) + w ≥ 0
+uniform int   uClipCount;      // 0, 1, or 2 active planes
+uniform float uDensityScale;   // optical depth per uRMax of unit brightness
+uniform float uOpacityPow;     // extinction uses brightᵖᵒʷ (see volume.frag)
+uniform float uEmissionGain;   // glow multiplier on the palette emission
+uniform int   uTonemap;        // 0 linearToSrgb clamp, 1 AgX filmic
+uniform float uExposure;       // EV shift (2^EV) on HDR before the transform
+uniform vec3  uLightDir;       // key light: unit vector, scene toward light
+uniform float uLightGain;      // key light: scattered-light gain
+uniform float uHgG;            // Henyey–Greenstein anisotropy g ∈ (−1, 1)
+uniform int   uEnvMode;        // environment: 0 black, 1 uniform white,
+                               // 2 studio (soft neutral + two broad tinted
+                               // lobes), 3 iso-luminant hue sphere (constant
+                               // luminance — refraction is visible with zero
+                               // directional bias), 4 lat-long checker
+uniform float uEnvGain;        // environment radiance multiplier
+uniform float uGradDelta;      // finite-difference half-step for gradients,
+                               // as a fraction of uRMax
+
+// ---------------------------------------------------------------------------
+// Field access: brightness, clipping, gradients.
+// ---------------------------------------------------------------------------
+float fieldBright(vec3 p) { return brightnessOf(evalPsi(p)); }
+
+// True where p is on the kept side of every active clip plane.
+bool insideClips(vec3 p) {
+    for (int i = 0; i < uClipCount; i++)
+        if (dot(uClipPlane[i].xyz, p) + uClipPlane[i].w < 0.0) return false;
+    return true;
+}
+
+// Brightness with cut-away material removed: the density the stochastic
+// integrators (path tracer, eikonal medium) see, so clip planes carve the
+// medium itself rather than merely the primary ray.
+float fieldBrightClipped(vec3 p) { return insideClips(p) ? fieldBright(p) : 0.0; }
+
+// ∇brightness by central differences (6 ψ evaluations). h in world units.
+vec3 fieldGradient(vec3 p, float h) {
+    vec2 e = vec2(h, 0.0);
+    return vec3(fieldBright(p + e.xyy) - fieldBright(p - e.xyy),
+                fieldBright(p + e.yxy) - fieldBright(p - e.yxy),
+                fieldBright(p + e.yyx) - fieldBright(p - e.yyx)) / (2.0 * h);
+}
+
+// ---------------------------------------------------------------------------
+// Camera + domain geometry.
+// ---------------------------------------------------------------------------
+vec3 primaryRay(vec2 uv) {
+    vec2 ndc = uv * 2.0 - 1.0;
+    return normalize(uCamFwd + uTanHalfFov * (ndc.x * uAspect * uCamRight
+                                              + ndc.y * uCamUp));
+}
+
+// Clip the ray ro + t·rd to the domain: the ball r ≤ uRMax intersected with
+// the kept half-spaces (each cut exact — linear in t). False ⇒ empty ray.
+bool domainSegment(vec3 ro, vec3 rd, out float t0, out float t1) {
+    float b = dot(ro, rd);
+    float c = dot(ro, ro) - uRMax * uRMax;
+    float disc = b * b - c;
+    if (disc <= 0.0) return false;
+    float sq = sqrt(disc);
+    t0 = max(-b - sq, 0.0);               // camera inside the ball ⇒ start at 0
+    t1 = -b + sq;
+    for (int i = 0; i < uClipCount; i++) {
+        vec3 n = uClipPlane[i].xyz;
+        float f0 = dot(n, ro) + uClipPlane[i].w;   // signed dist at t = 0
+        float df = dot(n, rd);                     // rate along the ray
+        if (abs(df) < 1e-8) {
+            if (f0 < 0.0) return false;            // parallel and outside
+        } else {
+            float tc = -f0 / df;
+            if (df > 0.0) t0 = max(t0, tc);        // entering the kept side
+            else          t1 = min(t1, tc);        // leaving it
+        }
+    }
+    return t1 > t0;
+}
+
+// ---------------------------------------------------------------------------
+// Stochastic toolkit: PCG hash RNG, Henyey–Greenstein, direction sets.
+// ---------------------------------------------------------------------------
+uint gRngState;
+
+// PCG-RXS-M-XS output permutation over an LCG — the standard cheap-but-good
+// shader RNG. One global stream per fragment, advanced by every rnd() call.
+float rnd() {
+    gRngState = gRngState * 747796405u + 2891336453u;
+    uint w = ((gRngState >> ((gRngState >> 28u) + 4u)) ^ gRngState) * 277803737u;
+    return float((w >> 22u) ^ w) * (1.0 / 4294967296.0);
+}
+
+void rngSeed(uvec2 pixel, uint frame) {
+    gRngState = pixel.x * 1973u + pixel.y * 9277u + frame * 26699u + 1u;
+    rnd(); rnd();   // decorrelate the seeds' low-entropy structure
+}
+
+// HG phase function, 1/(4π)-normalized (∫ over the sphere = 1).
+float hgPhase(float cosT, float g) {
+    float g2 = g * g;
+    return (1.0 - g2) / (4.0 * PI * pow(max(1.0 + g2 - 2.0 * g * cosT, 1e-4), 1.5));
+}
+
+// Convention used by every lighting term here: multiplying by 4π makes the
+// isotropic phase equal 1, so light-gain sliders keep the same scale whether
+// anisotropy is on or off (and across integrators).
+float hgPhase4Pi(float cosT, float g) { return 4.0 * PI * hgPhase(cosT, g); }
+
+vec3 orthoVec(vec3 v) {
+    return abs(v.z) < 0.9 ? normalize(cross(v, vec3(0, 0, 1)))
+                          : normalize(cross(v, vec3(1, 0, 0)));
+}
+
+// Sample a direction from HG around `dir` (exact inversion; pdf = hgPhase,
+// so phase/pdf cancels in the path tracer's throughput).
+vec3 sampleHg(vec3 dir, float g) {
+    float u1 = rnd(), u2 = rnd();
+    float cosT;
+    if (abs(g) < 1e-3) cosT = 1.0 - 2.0 * u1;
+    else {
+        float sq = (1.0 - g * g) / (1.0 - g + 2.0 * g * u1);
+        cosT = (1.0 + g * g - sq * sq) / (2.0 * g);
+    }
+    float sinT = sqrt(max(1.0 - cosT * cosT, 0.0));
+    float phi = 2.0 * PI * u2;
+    vec3 t = orthoVec(dir);
+    vec3 b = cross(dir, t);
+    return normalize(sinT * cos(phi) * t + sinT * sin(phi) * b + cosT * dir);
+}
+
+// i-th of n roughly-uniform sphere directions (Fibonacci spiral), spun by
+// `rot` radians — per-pixel rotation turns the fixed set's structured error
+// into noise.
+vec3 fibDir(int i, int n, float rot) {
+    float z = 1.0 - 2.0 * (float(i) + 0.5) / float(n);
+    float r = sqrt(max(1.0 - z * z, 0.0));
+    float phi = 2.399963229728653 * float(i) + rot;   // golden angle
+    return vec3(r * cos(phi), r * sin(phi), z);
+}
+
+// ---------------------------------------------------------------------------
+// Procedural spherical environments (linear RGB). Deliberately analytic — no
+// textures, no favored axis beyond what each mode states.
+// ---------------------------------------------------------------------------
+vec3 envRadiance(vec3 d) {
+    if (uEnvMode == 1) return vec3(1.0);
+    if (uEnvMode == 2) {
+        // Studio: neutral base + two broad soft lobes (warm high, cool low)
+        // + a faint floor bounce. Gentle luminance variation for glassy
+        // gradients without a hard key direction.
+        vec3 c = vec3(0.45);
+        c += vec3(1.0, 0.9, 0.75) * 0.55
+             * pow(max(dot(d, normalize(vec3(0.6, 0.25, 0.75))), 0.0), 3.0);
+        c += vec3(0.7, 0.82, 1.0) * 0.45
+             * pow(max(dot(d, normalize(vec3(-0.7, -0.2, 0.1))), 0.0), 2.0);
+        c += vec3(0.9) * 0.2 * pow(max(-d.z, 0.0), 2.0);
+        return c;
+    }
+    if (uEnvMode == 3) {
+        // Iso-luminant hue sphere: hue = azimuth, chroma fades at the poles,
+        // OKLab lightness constant — direction is *visible* (hue) but no
+        // direction is *brighter* (the "unbiased illumination" request).
+        float hue = atan(d.y, d.x);
+        float C = 0.13 * sqrt(max(1.0 - d.z * d.z, 0.0));
+        return max(oklabToLinearSrgb(vec3(0.72, C * cos(hue), C * sin(hue))), 0.0);
+    }
+    if (uEnvMode == 4) {
+        // Lat-long checker: pure structure probe for refraction distortion.
+        float az = atan(d.y, d.x) / (2.0 * PI) + 0.5;
+        float el = asin(clamp(d.z, -1.0, 1.0)) / PI + 0.5;
+        float k = mod(floor(az * 16.0) + floor(el * 8.0), 2.0);
+        return vec3(mix(0.25, 0.85, k));
+    }
+    return vec3(0.0);
+}
+
+// ---------------------------------------------------------------------------
+// Linear-RGB palette emission (moved here from volume.frag so the path tracer
+// shares it) — physically sensible compositing happens in linear RGB.
+// ---------------------------------------------------------------------------
+vec3 rampColorLinear(float t) {
+    vec3 c = rampStops(t);
+    if (uRampSpaceSrgb) return srgbToLinear(clamp(c, 0.0, 1.0));
+    return max(oklabToLinearSrgb(c), 0.0);
+}
+
+vec3 phaseColorLinear(float phase, float bright) {
+    float hue = phase + uPhaseH0;
+    float C = (uPhaseVivid ? lookupTable(uPhaseCmaxTab, fract(hue / (2.0 * PI)))
+                           : uPhaseC) * pow(bright, uPhaseChromaPow);
+    return max(oklabToLinearSrgb(vec3(uPhaseL * bright, C * cos(hue), C * sin(hue))), 0.0);
+}
+
+// The color a medium sample emits/scatters, per the active color mode.
+vec3 emitColorLinear(vec2 psi, float bri) {
+    return uColorMode == 2 ? phaseColorLinear(atan(psi.y, psi.x), bri)
+         : uColorMode == 1 ? srgbToLinear(rampColorSigned(bri, psi.x))
+                           : rampColorLinear(bri);
+}
+
+// ---------------------------------------------------------------------------
+// Local illumination models (iteration 5 experiments). Applied either on
+// isosurface hits or — gated by gradient confidence — inside the volume
+// integrators, giving shell-like regions a lit-surface response while flat
+// regions stay pure emission (the anti-"furriness" constraint).
+// ---------------------------------------------------------------------------
+uniform int   uShadeModel;     // 0 off, 1 Lambert, 2 Blinn–Phong, 3 GGX/Fresnel
+uniform float uShadeDiffuse;   // diffuse weight
+uniform float uShadeSpec;      // specular weight
+uniform float uShadeRough;     // roughness ∈ (0, 1]: Blinn shininess and GGX α
+uniform float uShadeF0;        // Fresnel normal-incidence reflectance
+                               // (0.04 glass/water … 0.1 glossy lacquer)
+uniform float uShadeConf;      // gradient-confidence scale: how sharply the
+                               // relative gradient must rise before a sample
+                               // counts as "surface" (0 disables gating)
+
+float fresnelSchlick(float cosT, float F0) {
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosT, 0.0, 1.0), 5.0);
+}
+
+// Surface-likeness ∈ [0,1] from the relative brightness gradient: |∇b|
+// measured over 1% of the domain, normalized by the local value. Nodal shells
+// (b swinging over a short distance) score ≈ 1; the smooth outer haze ≈ 0.
+float gradientConfidence(float gradMag, float bri) {
+    float rel = gradMag * 0.01 * uRMax / max(bri, 0.02);
+    return 1.0 - exp(-uShadeConf * rel);
+}
+
+// White-light BRDF response for the active model. N must be unit and
+// viewer-facing; V points toward the camera, L toward the light.
+vec3 shadeSurface(vec3 N, vec3 V, vec3 L, vec3 albedo) {
+    float ndl = max(dot(N, L), 0.0);
+    vec3 c = albedo * (uShadeDiffuse * ndl);
+    if (uShadeModel >= 2) {
+        vec3 H = normalize(V + L);
+        float ndh = max(dot(N, H), 0.0);
+        float f = fresnelSchlick(max(dot(H, V), 0.0), uShadeF0);
+        float spec;
+        if (uShadeModel == 2) {
+            // Normalized Blinn–Phong; roughness → shininess ≈ 2/α².
+            float shin = 2.0 / max(uShadeRough * uShadeRough, 1e-3);
+            spec = f * pow(ndh, shin) * (shin + 2.0) / 8.0 * ndl;
+        } else {
+            // GGX + Smith (k = α/2 approximation), Schlick Fresnel.
+            float a = max(uShadeRough * uShadeRough, 1e-3);
+            float a2 = a * a;
+            float den = ndh * ndh * (a2 - 1.0) + 1.0;
+            float D = a2 / (PI * den * den);
+            float ndv = max(dot(N, V), 1e-3);
+            float k = a * 0.5;
+            float G = (ndv / (ndv * (1.0 - k) + k)) * (ndl / (ndl * (1.0 - k) + k));
+            spec = f * D * G / max(4.0 * ndv, 1e-3);
+        }
+        c += vec3(uShadeSpec * spec);
+    }
+    return c;
+}
+
+// The shared HDR → display-sRGB transfer (EA-family, path tracer, eikonal).
+vec3 displayTransform(vec3 hdr) {
+    hdr *= exp2(uExposure);
+    return uTonemap == 1 ? agxDisplay(hdr) : linearToSrgb(hdr);
 }

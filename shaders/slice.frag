@@ -17,7 +17,7 @@
 uniform vec3 uOrigin;      // plane center, world (a₀)
 uniform vec3 uAxisU;       // world vector spanning uv.x ∈ [0,1] → [−1,1]·uAxisU
 uniform vec3 uAxisV;       // world vector spanning uv.y likewise
-uniform int uColorMode;    // 0 ramp, 1 signed, 2 phase
+                           // (uColorMode is declared in common.glsl)
 
 in vec2 vUv;
 out vec4 fragColor;

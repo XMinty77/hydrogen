@@ -28,15 +28,36 @@ reload, nothing else to do.
 - **2D slice** — presets xz, xy, yz or a fully custom plane (azimuth,
   elevation, roll, offset along the normal). Drag rotates the plane, wheel
   zooms.
-- **3D volume** — MIP, emission–absorption, or shadowed scattering ("scatter":
-  EA plus a directional key light with self-shadowing — see the "key light"
-  folder: direction, gain, shadow steps, shadow density); steps/density/
-  opacity/emission; display transform per integrator output: plain gamma
-  ("gamma", default) or AgX filmic ("agx"), with an EV exposure slider; two
-  clip planes (axis: view forward/right/up + offset + flip), world-fixed at
-  the starting camera's axes by default, each optionally locked to the live
-  camera ("lock to camera"). Orbit camera (drag + wheel) or FPS fly camera
-  (click to capture the mouse, WASD + E/Q, Shift = fast, Esc releases).
+- **3D volume** — seven techniques under the `technique` selector, every
+  parameter exposed for experimentation (iteration 5):
+  - **mip** — maximum-intensity projection (phase-at-max hue in complex mode).
+  - **ea** — emission–absorption, the certified default look.
+  - **scatter** — anisotropic ambient multi-scattering: EA + a key light with
+    Wrenninge-style multi-scatter octaves (soft self-shadowing that glows
+    through), a Henyey–Greenstein phase factor (forward halos, silver
+    linings), and a Fibonacci-direction ambient-occlusion field.
+  - **mida** — maximum intensity difference accumulation (Bruckner & Gröller),
+    with the γ slider blending EA ↔ MIDA ↔ MIP; pairs with the compressed
+    normalization toggle (display folder: off/log/asinh + strength).
+  - **iso** — emissive nested isosurfaces (bisection-refined, level sweep =
+    "3D slides" through the wavefunction), rim glow, optional lit shading.
+  - **pathtrace** — progressive volumetric path tracing (delta tracking,
+    multiple scattering with palette-tinted albedo, NEE key light, procedural
+    environments, thin-lens depth of field); accumulates while the view is
+    still, `?spp=N` sets shot-mode convergence.
+  - **eikonal** — refraction rendering: ψ mapped to a gradient-index medium
+    (power/log compressive map), rays bent by the eikonal equation, spherical
+    environment illumination (studio/hue-sphere/checker/…), optional
+    chromatic dispersion and internal palette glow.
+  - Surface-shading folder (ea/scatter/iso): Lambert, Blinn–Phong, or
+    GGX/Fresnel response on the key light, gated by gradient confidence so
+    only shell-like regions light up (no volume "fur").
+  - Shared: steps/density/opacity/emission; display transform: plain gamma
+    ("gamma", default) or AgX filmic ("agx") + EV exposure; two clip planes
+    (axis: view forward/right/up + offset + flip), world-fixed at the
+    starting camera's axes by default, each optionally locked to the live
+    camera. Orbit camera (drag + wheel) or FPS fly camera (click to capture
+    the mouse, WASD + E/Q, Shift = fast, Esc releases).
 
 ## URL parameters
 

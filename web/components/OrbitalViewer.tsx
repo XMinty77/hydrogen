@@ -11,13 +11,22 @@
 //   lib/cameras.ts   — orbit + fly cameras (CLI-compatible conventions)
 //
 // This file owns what remains: UI state, its mapping to render parameters
-// (slice-plane construction, camera-locked clip planes), input handling, and
-// the requestAnimationFrame loop.
+// (slice-plane construction, camera-locked clip planes), input handling, the
+// requestAnimationFrame loop, and — for the path tracer — deciding when the
+// progressive accumulation must restart (any change to a parameter the image
+// depends on).
+//
+// Rendering techniques (iteration 5): the single `technique` selector spans
+// three shader programs — mip/ea/scatter/mida/iso run volume.frag,
+// pathtrace runs the progressive Monte Carlo pipeline, eikonal the
+// refraction renderer. Every parameter of every technique is exposed in the
+// GUI (this round is explicitly for experimentation) and mirrored in the URL.
 //
 // URL parameters mirror the offline CLI (?state=4,2,1&view=volume&mode=complex
 // &camera=35,25,2.6&size=1024 …) so any view is shareable/scriptable — the
 // screenshot harness (scripts/shot.mjs) drives the app through them and waits
-// for window.__renderReady.
+// for window.__renderReady. For the path tracer, shot mode keeps accumulating
+// until ?spp=N samples before flagging ready.
 // =============================================================================
 
 import GUI from "lil-gui";
@@ -25,7 +34,13 @@ import { useEffect, useRef } from "react";
 import { CameraRig, type CameraPose } from "../lib/cameras";
 import { framingRadius, loadHorb } from "../lib/horb";
 import { loadPalettes } from "../lib/palettes";
-import { OrbitalRenderer, type CommonParams } from "../lib/renderer";
+import {
+  OrbitalRenderer,
+  type CameraParams,
+  type CommonParams,
+  type LightParams,
+  type ShadeParams,
+} from "../lib/renderer";
 import { cross, norm, scale, type Vec3 } from "../lib/vec3";
 
 const DEG = Math.PI / 180;
@@ -45,8 +60,18 @@ interface ClipParams {
   camLock: boolean;
 }
 
+const TECHNIQUES = ["mip", "ea", "scatter", "mida", "iso", "pathtrace", "eikonal"] as const;
+type Technique = (typeof TECHNIQUES)[number];
+
+const ENVS = ["black", "uniform", "studio", "hue", "checker"] as const;
+type EnvName = (typeof ENVS)[number];
+
+const SHADE_MODELS = ["off", "lambert", "blinn", "ggx"] as const;
+type ShadeModel = (typeof SHADE_MODELS)[number];
+
 /** The full UI state. Defaults reproduce the offline CLI's defaults so web
- * and stills start from the same picture. */
+ * and stills start from the same picture; per-technique defaults are this
+ * iteration's tuned starting points. */
 function defaultParams() {
   return {
     view: "volume" as "slice" | "volume",
@@ -57,6 +82,9 @@ function defaultParams() {
     color: "signed" as "ramp" | "signed" | "phase",
     value: "density" as "density" | "amplitude",
     gamma: 0.71,
+    /** Extra range compression before gamma (esp. for MIDA): see common.glsl. */
+    compress: "off" as "off" | "log" | "asinh",
+    compressK: 20,
     dither: true,
     ramp: "accretion_tuned",
     rampSpace: "oklab" as "oklab" | "srgb",
@@ -76,23 +104,87 @@ function defaultParams() {
     sliceOffset: 0,
     sliceZoom: 1,
 
-    // Volume. EA defaults are the user-tuned values of 2026-07-19; the
-    // density range is deliberately narrow — beyond ~50 everything is fog
-    // (the offline CLI still accepts anything, for bulk-structure looks).
-    // "scatter" = EA + a self-shadowed key light; lightGain 0 recovers EA.
-    integrator: "ea" as "mip" | "ea" | "scatter",
+    // Volume — shared by the raymarched techniques. EA defaults are the
+    // user-tuned values of 2026-07-19 and are untouched by this iteration.
+    technique: "ea" as Technique,
     steps: 64,
     density: 5,
     opacityPow: 2.15,
     emission: 6.7,
     tonemap: "gamma" as "gamma" | "agx",
     exposure: 0,
+    fov: 40,
+
+    // Key light (scatter, lit isosurfaces, surface shading, path tracer).
     lightAz: -30,
     lightEl: 50,
-    lightGain: 0,
+    lightGain: 6,
+    /** Henyey–Greenstein anisotropy: 0 isotropic, >0 forward (halos toward
+     * the light), <0 backward. */
+    hgG: 0.35,
+
+    // Anisotropic ambient multi-scattering (technique "scatter").
     shadowSteps: 24,
     shadowDensity: 120,
-    fov: 40,
+    octaves: 3,
+    octaveGain: 0.5,
+    octaveExt: 0.4,
+    ambientGain: 2,
+    ambientDirs: 6,
+    ambientRadius: 0.25,
+    ambientDensity: 250,
+
+    // MIDA (technique "mida"): −1 = plain EA … 0 = MIDA … +1 = MIP.
+    midaGamma: 0,
+
+    // Emissive isosurfaces (technique "iso"). Sweeping isoLevel pages
+    // through the field's nested shells ("3D slides").
+    isoLevel: 0.5,
+    isoCount: 3,
+    isoSpacing: 0.5,
+    isoAlpha: 0.4,
+    isoEmission: 2.5,
+    isoRim: 1.5,
+
+    // Local illumination overlay (ea/scatter volumes + isosurfaces).
+    shadeModel: "off" as ShadeModel,
+    shadeDiffuse: 0.5,
+    shadeSpec: 2,
+    shadeRough: 0.3,
+    shadeF0: 0.05,
+    /** Gradient-confidence gate: higher = only the sharpest shells get lit. */
+    shadeConf: 1.5,
+    /** Finite-difference half-step for gradients, fraction of rMax. */
+    gradDelta: 0.004,
+
+    // Volumetric path tracing (technique "pathtrace").
+    maxBounces: 4,
+    albedo: 0.85,
+    /** 0 white scattering … 1 palette-colored multiple scattering. */
+    scatterTint: 0.7,
+    sppFrame: 1,
+    /** Thin-lens aperture, in framing radii (0 = pinhole). */
+    aperture: 0,
+    /** Focal distance, in framing radii (the default camera orbits at 2.6). */
+    focus: 2.6,
+    ptEnv: "black" as EnvName,
+    ptEnvGain: 1,
+
+    // Eikonal refraction (technique "eikonal"). Tuned 2026-07-19: studio env
+    // + gentle log map reads as an opalescent gem; the split at the equator
+    // is the (4,2,1) node plane (n → 1 there) — real physics, keep it.
+    eikSteps: 300,
+    iorScale: 0.25,
+    eikMap: "log" as "pow" | "log",
+    eikPow: 0.5,
+    eikLogK: 10,
+    absorb: 1,
+    eikEmission: 3,
+    dispersion: 0.05,
+    eikEnv: "studio" as EnvName,
+    eikEnvGain: 1,
+    eikGradDelta: 0.004,
+
     clips: [
       { enabled: false, axis: "forward", offset: 0, flip: false, camLock: false },
       { enabled: false, axis: "up", offset: 0, flip: false, camLock: false },
@@ -102,8 +194,82 @@ function defaultParams() {
 type Params = ReturnType<typeof defaultParams>;
 
 const COLOR_MODE = { ramp: 0, signed: 1, phase: 2 } as const;
-const INTEGRATOR = { mip: 0, ea: 1, scatter: 2 } as const;
+const INTEGRATOR = { mip: 0, ea: 1, scatter: 2, mida: 3, iso: 4 } as const;
 const TONEMAP = { gamma: 0, agx: 1 } as const;
+const COMPRESS = { off: 0, log: 1, asinh: 2 } as const;
+const ENV_MODE = { black: 0, uniform: 1, studio: 2, hue: 3, checker: 4 } as const;
+const SHADE_MODEL = { off: 0, lambert: 1, blinn: 2, ggx: 3 } as const;
+
+// ---------------------------------------------------------------------------
+// URL vocabulary. Bespoke keys (state, camera, clip, slice geometry) keep
+// their historical handling; everything added by iteration 5 goes through
+// these tables — one row per parameter: [key, round-digits, integer?].
+// The same tables drive both parsing and writeback, so they cannot drift.
+// ---------------------------------------------------------------------------
+type NumKey = {
+  [K in keyof Params]: Params[K] extends number ? K : never;
+}[keyof Params];
+
+const NUM_KEYS: [NumKey, number, boolean?][] = [
+  ["gamma", 3],
+  ["compressK", 1],
+  ["phaseChromaPow", 3],
+  ["renderScale", 3],
+  ["steps", 0, true],
+  ["density", 2],
+  ["opacityPow", 2],
+  ["emission", 2],
+  ["exposure", 2],
+  ["fov", 1],
+  ["lightAz", 1],
+  ["lightEl", 1],
+  ["lightGain", 2],
+  ["hgG", 2],
+  ["shadowSteps", 0, true],
+  ["shadowDensity", 1],
+  ["octaves", 0, true],
+  ["octaveGain", 2],
+  ["octaveExt", 2],
+  ["ambientGain", 2],
+  ["ambientDirs", 0, true],
+  ["ambientRadius", 2],
+  ["ambientDensity", 1],
+  ["midaGamma", 2],
+  ["isoLevel", 3],
+  ["isoCount", 0, true],
+  ["isoSpacing", 2],
+  ["isoAlpha", 2],
+  ["isoEmission", 2],
+  ["isoRim", 2],
+  ["shadeDiffuse", 2],
+  ["shadeSpec", 2],
+  ["shadeRough", 2],
+  ["shadeF0", 3],
+  ["shadeConf", 2],
+  ["gradDelta", 4],
+  ["maxBounces", 0, true],
+  ["albedo", 2],
+  ["scatterTint", 2],
+  ["sppFrame", 0, true],
+  ["aperture", 3],
+  ["focus", 2],
+  ["ptEnvGain", 2],
+  ["eikSteps", 0, true],
+  ["iorScale", 3],
+  ["eikPow", 2],
+  ["eikLogK", 1],
+  ["absorb", 2],
+  ["eikEmission", 2],
+  ["dispersion", 3],
+  ["eikEnvGain", 2],
+  ["eikGradDelta", 4],
+];
+
+// URL aliases that differ from the param name (backward compatibility).
+const NUM_ALIASES: Partial<Record<NumKey, string>> = {
+  phaseChromaPow: "chromaPow",
+  renderScale: "scale",
+};
 
 /** Apply ?key=value overrides (see file header). Unknown keys are ignored. */
 function applyUrlOverrides(p: Params, search: string) {
@@ -112,9 +278,9 @@ function applyUrlOverrides(p: Params, search: string) {
     const v = q.get(k);
     if (v !== null && Number.isFinite(+v)) set(+v);
   };
-  const str = <T extends string>(k: string, allowed: T[], set: (v: T) => void) => {
+  const str = <T extends string>(k: string, allowed: readonly T[], set: (v: T) => void) => {
     const v = q.get(k);
-    if (v !== null && (allowed as string[]).includes(v)) set(v as T);
+    if (v !== null && (allowed as readonly string[]).includes(v)) set(v as T);
   };
 
   const state = q.get("state")?.split(",").map(Number);
@@ -123,17 +289,14 @@ function applyUrlOverrides(p: Params, search: string) {
   str("view", ["slice", "volume"], (v) => (p.view = v));
   str("mode", ["real", "complex"], (v) => {
     p.mode = v;
-    p.color = v === "real" ? "ramp" : "phase";
   });
   str("color", ["ramp", "signed", "phase"], (v) => (p.color = v));
   str("value", ["density", "amplitude"], (v) => (p.value = v));
-  num("gamma", (v) => (p.gamma = v));
+  str("compress", ["off", "log", "asinh"], (v) => (p.compress = v));
   if (q.get("ramp")) p.ramp = q.get("ramp")!;
   str("rampSpace", ["oklab", "srgb"], (v) => (p.rampSpace = v));
   if (q.get("vivid") === "0") p.phaseVivid = false;
-  num("chromaPow", (v) => (p.phaseChromaPow = v));
   if (q.get("dither") === "0") p.dither = false;
-  num("scale", (v) => (p.renderScale = v));
 
   str("plane", ["xz", "xy", "yz", "custom"], (v) => (p.slicePlane = v));
   num("az", (v) => (p.sliceAz = v));
@@ -142,19 +305,17 @@ function applyUrlOverrides(p: Params, search: string) {
   num("offset", (v) => (p.sliceOffset = v));
   num("zoom", (v) => (p.sliceZoom = v));
 
-  str("integrator", ["mip", "ea", "scatter"], (v) => (p.integrator = v));
-  num("steps", (v) => (p.steps = Math.round(v)));
-  num("density", (v) => (p.density = v));
-  num("opacityPow", (v) => (p.opacityPow = v));
-  num("emission", (v) => (p.emission = v));
+  str("integrator", TECHNIQUES, (v) => (p.technique = v));
   str("tonemap", ["gamma", "agx"], (v) => (p.tonemap = v));
-  num("exposure", (v) => (p.exposure = v));
-  num("lightAz", (v) => (p.lightAz = v));
-  num("lightEl", (v) => (p.lightEl = v));
-  num("lightGain", (v) => (p.lightGain = v));
-  num("shadowSteps", (v) => (p.shadowSteps = Math.round(v)));
-  num("shadowDensity", (v) => (p.shadowDensity = v));
-  num("fov", (v) => (p.fov = v));
+  str("shadeModel", SHADE_MODELS, (v) => (p.shadeModel = v));
+  str("ptEnv", ENVS, (v) => (p.ptEnv = v));
+  str("eikEnv", ENVS, (v) => (p.eikEnv = v));
+  str("eikMap", ["pow", "log"], (v) => (p.eikMap = v));
+
+  for (const [key, , integer] of NUM_KEYS)
+    num(NUM_ALIASES[key] ?? key, (v) => {
+      (p as Record<NumKey, number>)[key] = integer ? Math.round(v) : v;
+    });
 
   // clip=axis,offset[,flip[,camLock]] — repeatable (first → clip A, …).
   q.getAll("clip").forEach((spec, i) => {
@@ -272,6 +433,9 @@ export default function OrbitalViewer() {
       const q = new URLSearchParams(location.search);
       const fixedSize = q.get("size") ? Math.max(16, +q.get("size")!) : null;
       const camOverride = q.get("camera")?.split(",").map(Number);
+      /** Shot mode: path-traced frames accumulate to this many samples per
+       * pixel before the harness is told the render is ready. */
+      const sppTarget = q.get("spp") ? Math.max(1, +q.get("spp")!) : 32;
 
       const gl = canvas.getContext("webgl2", {
         antialias: false, // shader output is already dithered; MSAA is useless
@@ -330,6 +494,8 @@ export default function OrbitalViewer() {
       fDisplay.add(params, "color", ["ramp", "signed", "phase"]);
       fDisplay.add(params, "value", ["density", "amplitude"]);
       fDisplay.add(params, "gamma", 0.2, 1, 0.01);
+      fDisplay.add(params, "compress", ["off", "log", "asinh"]);
+      fDisplay.add(params, "compressK", 1, 500, 1);
       fDisplay.add(params, "dither");
       fDisplay.add(params, "renderScale", 0.25, 1.5, 0.05);
 
@@ -348,21 +514,74 @@ export default function OrbitalViewer() {
       fSlice.add(params, "sliceZoom", 0.5, 20, 0.01).listen();
 
       const fVolume = gui.addFolder("volume");
-      fVolume.add(params, "integrator", ["mip", "ea", "scatter"]);
+      fVolume.add(params, "technique", TECHNIQUES as unknown as string[]).onChange(syncFolders);
       fVolume.add(params, "steps", 64, 1200, 1);
       fVolume.add(params, "density", 1, 50, 0.5);
       fVolume.add(params, "opacityPow", 0.5, 4, 0.05);
-      fVolume.add(params, "emission", 0.1, 20, 0.05);
+      fVolume.add(params, "emission", 0, 20, 0.05);
       fVolume.add(params, "tonemap", ["gamma", "agx"]);
       fVolume.add(params, "exposure", -4, 4, 0.05);
       fVolume.add(params, "fov", 20, 90, 1);
 
-      const fLight = gui.addFolder("key light").close();
+      const fLight = gui.addFolder("key light");
       fLight.add(params, "lightAz", -180, 180, 1);
       fLight.add(params, "lightEl", -89, 89, 1);
       fLight.add(params, "lightGain", 0, 30, 0.1);
-      fLight.add(params, "shadowSteps", 4, 64, 1);
-      fLight.add(params, "shadowDensity", 0, 400, 1);
+      fLight.add(params, "hgG", -0.9, 0.9, 0.01).name("anisotropy g");
+
+      const fScatter = gui.addFolder("multi-scattering");
+      fScatter.add(params, "shadowSteps", 4, 64, 1);
+      fScatter.add(params, "shadowDensity", 0, 400, 1);
+      fScatter.add(params, "octaves", 1, 6, 1);
+      fScatter.add(params, "octaveGain", 0.1, 0.9, 0.01);
+      fScatter.add(params, "octaveExt", 0.1, 0.9, 0.01);
+      fScatter.add(params, "ambientGain", 0, 10, 0.1);
+      fScatter.add(params, "ambientDirs", 1, 12, 1);
+      fScatter.add(params, "ambientRadius", 0.05, 0.6, 0.01);
+      fScatter.add(params, "ambientDensity", 0, 1000, 5);
+
+      const fMida = gui.addFolder("mida");
+      fMida.add(params, "midaGamma", -1, 1, 0.01).name("γ  (EA ← MIDA → MIP)");
+
+      const fIso = gui.addFolder("isosurfaces");
+      fIso.add(params, "isoLevel", 0.02, 0.98, 0.005).name("level (depth sweep)");
+      fIso.add(params, "isoCount", 1, 6, 1);
+      fIso.add(params, "isoSpacing", 0.2, 0.95, 0.01);
+      fIso.add(params, "isoAlpha", 0.05, 1, 0.01);
+      fIso.add(params, "isoEmission", 0, 10, 0.05);
+      fIso.add(params, "isoRim", 0, 10, 0.05);
+
+      const fShade = gui.addFolder("surface shading");
+      fShade.add(params, "shadeModel", SHADE_MODELS as unknown as string[]);
+      fShade.add(params, "shadeDiffuse", 0, 2, 0.01);
+      fShade.add(params, "shadeSpec", 0, 10, 0.05);
+      fShade.add(params, "shadeRough", 0.02, 1, 0.01);
+      fShade.add(params, "shadeF0", 0, 0.5, 0.005);
+      fShade.add(params, "shadeConf", 0, 10, 0.05).name("gradient confidence");
+      fShade.add(params, "gradDelta", 0.0005, 0.02, 0.0005);
+
+      const fPt = gui.addFolder("path tracer");
+      fPt.add(params, "maxBounces", 0, 16, 1);
+      fPt.add(params, "albedo", 0, 1, 0.01);
+      fPt.add(params, "scatterTint", 0, 1, 0.01);
+      fPt.add(params, "sppFrame", 1, 8, 1).name("samples / frame");
+      fPt.add(params, "aperture", 0, 0.25, 0.001);
+      fPt.add(params, "focus", 0.2, 6, 0.01);
+      fPt.add(params, "ptEnv", ENVS as unknown as string[]).name("environment");
+      fPt.add(params, "ptEnvGain", 0, 5, 0.05);
+
+      const fEik = gui.addFolder("eikonal");
+      fEik.add(params, "eikSteps", 64, 1200, 1).name("steps");
+      fEik.add(params, "iorScale", 0, 1.5, 0.005).name("Δn (index scale)");
+      fEik.add(params, "eikMap", ["pow", "log"]).name("density map");
+      fEik.add(params, "eikPow", 0.1, 2, 0.01);
+      fEik.add(params, "eikLogK", 1, 500, 1);
+      fEik.add(params, "absorb", 0, 20, 0.05);
+      fEik.add(params, "eikEmission", 0, 10, 0.05);
+      fEik.add(params, "dispersion", 0, 0.2, 0.001);
+      fEik.add(params, "eikEnv", ENVS as unknown as string[]).name("environment");
+      fEik.add(params, "eikEnvGain", 0, 5, 0.05);
+      fEik.add(params, "eikGradDelta", 0.0005, 0.02, 0.0005);
 
       const fCamera = gui.addFolder("camera");
       // Bound to a proxy, not rig.mode: lil-gui writes the bound property
@@ -390,11 +609,23 @@ export default function OrbitalViewer() {
       const fClipA = clipFolder("clip plane A", params.clips[0]);
       const fClipB = clipFolder("clip plane B", params.clips[1]);
 
+      /** Which auxiliary folders each technique needs. */
       function syncFolders() {
         const vol = params.view === "volume";
-        (vol ? fSlice : fVolume).hide();
-        (vol ? fVolume : fSlice).show();
-        for (const f of [fLight, fCamera, fClipA, fClipB]) if (vol) f.show(); else f.hide();
+        const t = params.technique;
+        const show = (f: GUI, cond: boolean) => (cond ? f.show() : f.hide());
+        show(fSlice, !vol);
+        show(fVolume, vol);
+        show(fCamera, vol);
+        show(fClipA, vol);
+        show(fClipB, vol);
+        show(fLight, vol && ["ea", "scatter", "iso", "pathtrace"].includes(t));
+        show(fScatter, vol && t === "scatter");
+        show(fMida, vol && t === "mida");
+        show(fIso, vol && t === "iso");
+        show(fShade, vol && ["ea", "scatter", "iso"].includes(t));
+        show(fPt, vol && t === "pathtrace");
+        show(fEik, vol && t === "eikonal");
       }
       syncFolders();
 
@@ -475,15 +706,18 @@ export default function OrbitalViewer() {
       // The address bar mirrors the live view (user request 2026-07-19), so
       // any moment of exploration is copyable as a link. Only values that
       // differ from the defaults are written — the same vocabulary
-      // applyUrlOverrides reads back — and only for the active view, keeping
-      // URLs short. replaceState (no pushState) leaves history untouched.
+      // applyUrlOverrides reads back — and only for the active technique,
+      // keeping URLs short. replaceState (no pushState) leaves history alone.
       const urlDefaults = defaultParams();
       let lastQuery: string | null = null;
       const syncUrl = () => {
         const p = params;
         const d = urlDefaults;
+        const t = p.technique;
+        const vol = p.view === "volume";
         const q = new URLSearchParams();
         const r = (v: number, digits = 3) => +v.toFixed(digits);
+
         if (p.n !== d.n || p.l !== d.l || p.m !== d.m)
           q.set("state", `${p.n},${p.l},${p.m}`);
         if (p.view !== d.view) q.set("view", p.view);
@@ -491,14 +725,43 @@ export default function OrbitalViewer() {
         // color is implied by mode (real→ramp, complex→phase) unless changed.
         if (p.color !== (p.mode === "real" ? "ramp" : "phase")) q.set("color", p.color);
         if (p.value !== d.value) q.set("value", p.value);
-        if (p.gamma !== d.gamma) q.set("gamma", `${r(p.gamma)}`);
+        if (p.compress !== d.compress) q.set("compress", p.compress);
         if (p.ramp !== d.ramp) q.set("ramp", p.ramp);
         if (p.rampSpace !== d.rampSpace) q.set("rampSpace", p.rampSpace);
         if (!p.phaseVivid) q.set("vivid", "0");
-        if (p.phaseChromaPow !== d.phaseChromaPow) q.set("chromaPow", `${r(p.phaseChromaPow)}`);
         if (!p.dither) q.set("dither", "0");
-        if (p.renderScale !== d.renderScale) q.set("scale", `${r(p.renderScale)}`);
-        if (p.view === "slice") {
+
+        // Numeric params, gated to the groups the current view/technique
+        // actually reads (see the shader headers for ownership).
+        const groups: [NumKey[], boolean][] = [
+          [["gamma", "phaseChromaPow", "renderScale"], true],
+          [["compressK"], p.compress !== "off"],
+          [["steps"], vol && t !== "pathtrace" && t !== "eikonal"],
+          [["density", "opacityPow", "emission"], vol && t !== "mip" && t !== "iso" && t !== "eikonal"],
+          [["exposure", "fov"], vol],
+          [["lightAz", "lightEl", "lightGain", "hgG"],
+            vol && ["ea", "scatter", "iso", "pathtrace"].includes(t)],
+          [["shadowSteps", "shadowDensity", "octaves", "octaveGain", "octaveExt",
+            "ambientGain", "ambientDirs", "ambientRadius", "ambientDensity"],
+            vol && (t === "scatter" || t === "iso")],
+          [["midaGamma"], vol && t === "mida"],
+          [["isoLevel", "isoCount", "isoSpacing", "isoAlpha", "isoEmission", "isoRim"],
+            vol && t === "iso"],
+          [["shadeDiffuse", "shadeSpec", "shadeRough", "shadeF0", "shadeConf", "gradDelta"],
+            vol && p.shadeModel !== "off" && ["ea", "scatter", "iso"].includes(t)],
+          [["maxBounces", "albedo", "scatterTint", "sppFrame", "aperture", "focus", "ptEnvGain"],
+            vol && t === "pathtrace"],
+          [["eikSteps", "iorScale", "eikPow", "eikLogK", "absorb", "eikEmission",
+            "dispersion", "eikEnvGain", "eikGradDelta"],
+            vol && t === "eikonal"],
+        ];
+        const active = new Set<NumKey>();
+        for (const [keys, cond] of groups) if (cond) keys.forEach((k) => active.add(k));
+        for (const [key, digits] of NUM_KEYS)
+          if (active.has(key) && p[key] !== d[key])
+            q.set(NUM_ALIASES[key] ?? key, `${r(p[key], digits)}`);
+
+        if (!vol) {
           if (p.slicePlane !== d.slicePlane) q.set("plane", p.slicePlane);
           if (p.slicePlane === "custom") {
             q.set("az", `${r(p.sliceAz, 1)}`);
@@ -508,22 +771,15 @@ export default function OrbitalViewer() {
           if (p.sliceOffset !== 0) q.set("offset", `${r(p.sliceOffset)}`);
           if (p.sliceZoom !== 1) q.set("zoom", `${r(p.sliceZoom, 2)}`);
         } else {
-          if (p.integrator !== d.integrator) q.set("integrator", p.integrator);
-          if (p.steps !== d.steps) q.set("steps", `${p.steps}`);
-          if (p.density !== d.density) q.set("density", `${r(p.density, 2)}`);
-          if (p.opacityPow !== d.opacityPow) q.set("opacityPow", `${r(p.opacityPow, 2)}`);
-          if (p.emission !== d.emission) q.set("emission", `${r(p.emission, 2)}`);
+          if (t !== d.technique) q.set("integrator", t);
           if (p.tonemap !== d.tonemap) q.set("tonemap", p.tonemap);
-          if (p.exposure !== d.exposure) q.set("exposure", `${r(p.exposure, 2)}`);
-          if (p.integrator === "scatter") {
-            if (p.lightAz !== d.lightAz) q.set("lightAz", `${r(p.lightAz, 1)}`);
-            if (p.lightEl !== d.lightEl) q.set("lightEl", `${r(p.lightEl, 1)}`);
-            if (p.lightGain !== d.lightGain) q.set("lightGain", `${r(p.lightGain, 1)}`);
-            if (p.shadowSteps !== d.shadowSteps) q.set("shadowSteps", `${p.shadowSteps}`);
-            if (p.shadowDensity !== d.shadowDensity)
-              q.set("shadowDensity", `${r(p.shadowDensity, 1)}`);
+          if (p.shadeModel !== d.shadeModel && ["ea", "scatter", "iso"].includes(t))
+            q.set("shadeModel", p.shadeModel);
+          if (t === "pathtrace" && p.ptEnv !== d.ptEnv) q.set("ptEnv", p.ptEnv);
+          if (t === "eikonal") {
+            if (p.eikEnv !== d.eikEnv) q.set("eikEnv", p.eikEnv);
+            if (p.eikMap !== d.eikMap) q.set("eikMap", p.eikMap);
           }
-          if (p.fov !== d.fov) q.set("fov", `${r(p.fov, 1)}`);
           // Camera: only the orbit pose has a URL form (fly is transient).
           if (rig.mode === "orbit") {
             const az = r(rig.azDeg, 1), el = r(rig.elDeg, 1), dist = r(rig.dist, 2);
@@ -547,6 +803,23 @@ export default function OrbitalViewer() {
         }
       };
 
+      // Everything the path-traced image depends on: when this signature
+      // changes, the accumulation restarts. Display-only params (tonemap,
+      // exposure, dither, sppFrame) are deliberately absent — they apply to
+      // the already-accumulated result.
+      let lastPtSig = "";
+      const ptSignature = (pose: CameraPose, clips: number[][]) =>
+        JSON.stringify([
+          params.n, params.l, params.m, params.mode, params.color, params.value,
+          params.gamma, params.compress, params.compressK, params.ramp,
+          params.rampSpace, params.phaseVivid, params.phaseChromaPow,
+          params.density, params.opacityPow, params.emission,
+          params.lightAz, params.lightEl, params.lightGain, params.hgG,
+          params.maxBounces, params.albedo, params.scatterTint,
+          params.aperture, params.focus, params.ptEnv, params.ptEnvGain,
+          pose.pos, pose.fwd, clips, canvas.width, canvas.height,
+        ]);
+
       let lastT = performance.now();
       let emaMs = 0;
       let statsAge = 0;
@@ -567,6 +840,8 @@ export default function OrbitalViewer() {
           rampSpaceSrgb: params.rampSpace === "srgb",
           gamma: params.gamma,
           valueMode: params.value === "amplitude" ? 1 : 0,
+          compressMode: COMPRESS[params.compress],
+          compressK: params.compressK,
           dither: params.dither,
           phaseVivid: params.phaseVivid,
           phaseChromaPow: params.phaseChromaPow,
@@ -583,27 +858,105 @@ export default function OrbitalViewer() {
           renderer.renderSlice({ common, ...sp, axisU: scale(sp.axisU, aspect) });
         } else {
           const pose = rig.pose(framing());
-          renderer.renderVolume({
-            common,
+          const clips = clipPlaneVectors(params.clips, pose, basePose, framing());
+          const camera: CameraParams = {
             camPos: pose.pos,
             camRight: pose.right,
             camUp: pose.up,
             camFwd: pose.fwd,
             fovYDeg: params.fov,
-            integrator: INTEGRATOR[params.integrator],
-            steps: params.steps,
-            densityScale: params.density,
-            opacityPow: params.opacityPow,
-            emissionGain: params.emission,
             tonemap: TONEMAP[params.tonemap],
             exposureEv: params.exposure,
+            clipPlanes: clips,
+          };
+          const light: LightParams = {
             lightAzDeg: params.lightAz,
             lightElDeg: params.lightEl,
             lightGain: params.lightGain,
-            shadowSteps: params.shadowSteps,
-            shadowDensity: params.shadowDensity,
-            clipPlanes: clipPlaneVectors(params.clips, pose, basePose, framing()),
-          });
+            hgG: params.hgG,
+          };
+          const shade: ShadeParams = {
+            shadeModel: SHADE_MODEL[params.shadeModel],
+            shadeDiffuse: params.shadeDiffuse,
+            shadeSpec: params.shadeSpec,
+            shadeRough: params.shadeRough,
+            shadeF0: params.shadeF0,
+            shadeConf: params.shadeConf,
+            gradDelta: params.gradDelta,
+          };
+
+          if (params.technique === "pathtrace") {
+            if (!renderer.floatRenderable) {
+              statsEl.textContent =
+                "path tracing needs float render targets (EXT_color_buffer_float) — unavailable here.";
+              return;
+            }
+            const sig = ptSignature(pose, clips);
+            if (sig !== lastPtSig) {
+              lastPtSig = sig;
+              renderer.resetAccum();
+            }
+            renderer.pathtraceSample({
+              common,
+              camera,
+              light,
+              densityScale: params.density,
+              opacityPow: params.opacityPow,
+              emissionGain: params.emission,
+              maxBounces: params.maxBounces,
+              albedo: params.albedo,
+              scatterTint: params.scatterTint,
+              sppFrame: params.sppFrame,
+              aperture: params.aperture * framing(),
+              focusDist: params.focus * framing(),
+              envMode: ENV_MODE[params.ptEnv],
+              envGain: params.ptEnvGain,
+            });
+          } else if (params.technique === "eikonal") {
+            renderer.renderEikonal({
+              common,
+              camera,
+              steps: params.eikSteps,
+              iorScale: params.iorScale,
+              eikMap: params.eikMap === "log" ? 1 : 0,
+              eikPow: params.eikPow,
+              eikLogK: params.eikLogK,
+              absorb: params.absorb,
+              emission: params.eikEmission,
+              dispersion: params.dispersion,
+              envMode: ENV_MODE[params.eikEnv],
+              envGain: params.eikEnvGain,
+              gradDelta: params.eikGradDelta,
+            });
+          } else {
+            renderer.renderVolume({
+              common,
+              camera,
+              light,
+              shade,
+              integrator: INTEGRATOR[params.technique],
+              steps: params.steps,
+              densityScale: params.density,
+              opacityPow: params.opacityPow,
+              emissionGain: params.emission,
+              shadowSteps: params.shadowSteps,
+              shadowDensity: params.shadowDensity,
+              octaves: params.octaves,
+              octaveGain: params.octaveGain,
+              octaveExt: params.octaveExt,
+              ambientGain: params.ambientGain,
+              ambientDirs: params.ambientDirs,
+              ambientRadius: params.ambientRadius,
+              ambientDensity: params.ambientDensity,
+              midaGamma: params.midaGamma,
+              isoLevel: params.isoLevel,
+              isoCount: params.isoCount,
+              isoSpacing: params.isoSpacing,
+              isoAlpha: params.isoAlpha,
+              isoEmission: params.isoEmission,
+              isoRim: params.isoRim,
+            });
+          }
         }
 
         emaMs = emaMs === 0 ? dt * 1000 : emaMs * 0.9 + dt * 1000 * 0.1;
@@ -616,14 +969,25 @@ export default function OrbitalViewer() {
               : rig.mode === "orbit"
                 ? "drag: orbit · wheel: dolly"
                 : "click: capture mouse · WASD+EQ fly · Shift fast · Esc release";
+          const spp =
+            params.view === "volume" && params.technique === "pathtrace"
+              ? ` · ${renderer.pathtraceSamples} spp`
+              : "";
           statsEl.textContent =
             `|${params.n},${params.l},${params.m}⟩ ${params.mode} · ` +
-            `${canvas.width}×${canvas.height} · ${emaMs.toFixed(1)} ms\n${help}`;
+            `${canvas.width}×${canvas.height} · ${emaMs.toFixed(1)} ms${spp}\n${help}`;
         }
-        (window as unknown as { __renderReady?: boolean }).__renderReady = true;
-        // Shot mode (?size=N) renders exactly one frame: deterministic, and a
-        // multi-second software-rasterized EA frame can't stall the harness.
-        if (!fixedSize) requestAnimationFrame(loop);
+
+        // Shot mode (?size=N) renders deterministically and stops: one frame
+        // for the direct techniques, or — for the path tracer — as many
+        // accumulation passes as it takes to reach ?spp=N samples per pixel.
+        const converging =
+          params.view === "volume" &&
+          params.technique === "pathtrace" &&
+          renderer.pathtraceSamples < sppTarget;
+        if (!fixedSize || !converging)
+          (window as unknown as { __renderReady?: boolean }).__renderReady = true;
+        if (!fixedSize || converging) requestAnimationFrame(loop);
       };
       requestAnimationFrame(loop);
     })().catch((err) => {

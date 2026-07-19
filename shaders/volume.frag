@@ -3,153 +3,209 @@
 //
 // A perspective raymarcher over the analytic field: no 3D texture exists —
 // every sample reconstructs ψ exactly via evalPsi (common.glsl), so spatial
-// resolution is limited only by step count.
+// resolution is limited only by step count. Rays clip to the ball r ≤ uRMax
+// intersected with up to two exact half-space planes (domainSegment).
 //
-// Domain: the ball r ≤ uRMax (beyond it ψ is provably below visibility; see
-// lab). Rays clip to it analytically, then to up to two half-space planes —
-// each plane cut is exact (linear in the ray parameter), which is what makes
-// the web demo's camera-locked cutaways artifact-free.
-//
-// Integrators:
+// Integrators (uIntegrator):
 //   0 MIP — maximum-intensity projection: the colormap sees the brightest
-//     sample along the ray. For complex mode the *phase at the brightest
-//     sample* drives the hue, giving phase-colored MIP.
+//     sample along the ray; complex mode hues by the phase at that sample.
 //   1 Emission–absorption — front-to-back compositing: each sample emits its
-//     palette color (in linear RGB — compositing gamma-encoded values would
-//     be photometrically wrong) and occludes what lies behind it via
-//     Beer–Lambert extinction. The glowing-gas look.
-//   2 Shadowed scattering — the EA integrator plus a white directional key
-//     light: each sample additionally scatters uLightGain · T_L of light,
-//     where T_L is the Beer–Lambert transmittance along a secondary ray
-//     toward uLightDir (uShadowSteps coarse samples). Shells self-shadow —
-//     the depth cue plain EA lacks. The glow term (uEmissionGain) is
-//     untouched, so integrator 1's look is exactly recoverable.
+//     palette color in linear RGB and occludes what lies behind it via
+//     Beer–Lambert extinction. The glowing-gas look. (The certified default;
+//     its output is bit-stable across iterations.)
+//   2 Anisotropic ambient multi-scattering (iteration 5; replaces the old
+//     single-hard-shadow scatter). EA plus two light terms per sample:
+//       • key light: one shadow ray's optical depth τ drives a Wrenninge-style
+//         octave sum Σ aᵏ·exp(−bᵏτ) — each octave is a softer, brighter
+//         approximation of higher scattering orders, so dense cores glow
+//         through their own shadows instead of going flat black — times a
+//         Henyey–Greenstein phase factor (uHgG): forward-scattering halos
+//         when looking toward the light, silver linings on shell edges.
+//       • ambient: mean short-range transmittance over uAmbientDirs Fibonacci
+//         directions (per-pixel rotated) — an occlusion field that darkens
+//         lobe interiors and creases, the self-shadowed "sitting in space"
+//         cue plain EA lacks, with no directional bias at all.
+//   3 MIDA — maximum intensity difference accumulation (Bruckner & Gröller,
+//     EuroVis 2009): EA compositing, but a sample only *replaces* accumulated
+//     color to the extent it raises the running maximum (β = 1 − δ damping).
+//     Keeps MIP's structural legibility and EA's occlusion. uMidaGamma
+//     interpolates DVR ↔ MIDA ↔ MIP exactly as in the paper. Pairs with the
+//     compressed-normalization toggle (uCompressMode), which reshapes the
+//     value ordering MIDA keys on.
+//   4 Emissive isosurfaces — up to 6 nested shells of constant brightness,
+//     found by sign-change detection + bisection refinement (exact analytic
+//     field ⇒ crisp surfaces at any zoom). Each shell glows with its palette
+//     color, optionally lit by the local-illumination models (gradient
+//     normals), with a Fresnel-ish rim glow. Sweeping uIsoLevel pages through
+//     the wavefunction's level sets — the "3D slides" exploration.
 //
-// Display transform (EA/scatter only; MIP output is LDR by construction):
-//   uTonemap 0 — linearToSrgb with a hard [0,1] clamp (the original look);
-//   uTonemap 1 — AgX filmic (common.glsl) for highlight rolloff.
-//   uExposure shifts the HDR accumulation by 2^EV before either transform.
+// Surface-shading overlay (uShadeModel > 0, integrators 1–2): samples whose
+// *relative* brightness gradient is steep (gradientConfidence) additionally
+// respond to the key light through the selected BRDF — Lambert, Blinn–Phong,
+// or GGX/Fresnel — so nodal shells pick up glassy speculars while the smooth
+// haze between them stays pure emission (no full-volume "fur").
+//
+// Display transform (all but MIP, which is LDR by construction):
+// displayTransform in common.glsl — linear clamp or AgX, after uExposure EV.
 //
 // Sampling: per-pixel IGN jitter of the step offset decorrelates the marching
 // grid between neighboring pixels — banding becomes fine noise, which the
 // output dither and (for stills) supersampling absorb.
 // ============================================================================
 
-uniform vec3 uCamPos;          // camera position, world (a₀)
-uniform vec3 uCamRight;        // orthonormal camera basis…
-uniform vec3 uCamUp;
-uniform vec3 uCamFwd;
-uniform float uTanHalfFov;     // tan(vertical FOV / 2)
-uniform float uAspect;         // width / height
-uniform int uIntegrator;       // 0 MIP, 1 emission–absorption
+uniform int uIntegrator;       // 0 MIP, 1 EA, 2 scatter, 3 MIDA, 4 isosurfaces
 uniform int uSteps;            // samples along each ray inside the domain
-uniform float uDensityScale;   // EA: optical depth per uRMax of unit brightness
-uniform float uOpacityPow;     // EA: opacity uses brightᵖᵒʷ — emission keeps
-                               // the gamma-brightened color (which reads
-                               // correctly), but extinction needs a much
-                               // steeper curve or the huge dim outer cloud
-                               // integrates into uniform fog. pow ≈ 2.2 makes
-                               // opacity roughly linear in |ψ|²/q999 again.
-uniform float uEmissionGain;   // EA: emission multiplier; > 1 lets dense cores
-                               // saturate toward white (accumulation is HDR,
-                               // clamped only at the final transfer).
-uniform int uColorMode;        // 0 ramp, 1 signed (real), 2 phase (complex)
-uniform vec4 uClipPlane[2];    // half-spaces: keep where dot(n, p) + w ≥ 0
-uniform int uClipCount;        // 0, 1, or 2 active planes
-uniform int uTonemap;          // 0 linearToSrgb clamp, 1 AgX filmic
-uniform float uExposure;       // EV shift on the HDR accumulation (2^EV)
-uniform vec3 uLightDir;        // scatter: unit vector from scene toward light
-uniform float uLightGain;      // scatter: scattered-light gain
-uniform int uShadowSteps;      // scatter: samples along each shadow ray
-uniform float uShadowDensity;  // scatter: extinction scale for shadow rays,
-                               // decoupled from uDensityScale — the tuned
-                               // viewing density leaves the medium optically
-                               // thin (glow-dominated), which would make
-                               // self-shadowing invisibly weak (~10%); shadow
-                               // rays need an extinction of their own.
+
+// --- key-light shadowing (integrator 2; also shell lighting in 4) ----------
+uniform int   uShadowSteps;    // samples along each shadow ray
+uniform float uShadowDensity;  // extinction scale for shadow rays, decoupled
+                               // from uDensityScale — the tuned viewing
+                               // density leaves the medium optically thin
+                               // (glow-dominated); shadows need their own.
+uniform int   uOctaves;        // multi-scatter octaves (1 = single scattering)
+uniform float uOctaveGain;     // a: per-octave gain falloff
+uniform float uOctaveExt;      // b: per-octave extinction falloff
+
+// --- ambient occlusion field (integrator 2) --------------------------------
+uniform float uAmbientGain;    // ambient in-scatter gain (0 = off)
+uniform int   uAmbientDirs;    // directions in the occlusion estimate (≤ 12)
+uniform float uAmbientRadius;  // occlusion probe length, fraction of uRMax
+uniform float uAmbientDensity; // extinction scale for the ambient probes
+
+// --- MIDA (integrator 3) ----------------------------------------------------
+uniform float uMidaGamma;      // −1 → plain DVR/EA, 0 → MIDA, +1 → MIP
+
+// --- isosurfaces (integrator 4) ---------------------------------------------
+uniform float uIsoLevel;       // brightness of the outermost shell ∈ (0, 1)
+uniform int   uIsoCount;       // number of nested shells (1–6)
+uniform float uIsoSpacing;     // geometric ratio between successive levels
+uniform float uIsoAlpha;       // opacity of each shell
+uniform float uIsoEmission;    // shell self-glow gain (palette-colored)
+uniform float uIsoRim;         // Fresnel-style rim-glow gain
 
 in vec2 vUv;
 out vec4 fragColor;
 
-// Linear-RGB palette variants for physically sensible EA compositing.
-vec3 rampColorLinear(float t) {
-    vec3 c = rampStops(t);
-    if (uRampSpaceSrgb) return srgbToLinear(clamp(c, 0.0, 1.0));
-    return max(oklabToLinearSrgb(c), 0.0);
-}
+const int MAX_SHELLS = 6;
 
-vec3 phaseColorLinear(float phase, float bright) {
-    float hue = phase + uPhaseH0;
-    float C = (uPhaseVivid ? lookupTable(uPhaseCmaxTab, fract(hue / (2.0 * PI)))
-                           : uPhaseC) * pow(bright, uPhaseChromaPow);
-    return max(oklabToLinearSrgb(vec3(uPhaseL * bright, C * cos(hue), C * sin(hue))), 0.0);
-}
+// ---------------------------------------------------------------------------
+// Key-light machinery.
+// ---------------------------------------------------------------------------
 
-// Beer–Lambert transmittance from p toward the key light: the extinction the
-// primary integrator uses, accumulated over the chord to the domain boundary
-// with uShadowSteps jittered samples (coarse is fine — the result modulates
-// emission smoothly). p is always on the kept side of the clip planes; where
-// the shadow ray leaves a kept half-space the material ends (cut-away gas
-// casts no shadow), so only the leaving intersection clips the chord.
-float lightTransmittance(vec3 p, float jitter) {
+// Optical depth (already scaled by uShadowDensity) from p toward the light,
+// over the chord to the domain boundary, uShadowSteps jittered samples.
+// p is always on the kept side of the clip planes; where the shadow ray
+// leaves a kept half-space the material ends (cut-away gas casts no shadow),
+// so only the leaving intersection clips the chord.
+float lightOpticalDepth(vec3 p, float jitter) {
     float b = dot(p, uLightDir);
     float disc = b * b - (dot(p, p) - uRMax * uRMax);
-    if (disc <= 0.0) return 1.0;
+    if (disc <= 0.0) return 0.0;
     float tExit = -b + sqrt(disc);
     for (int i = 0; i < uClipCount; i++) {
         float df = dot(uClipPlane[i].xyz, uLightDir);
         if (df < -1e-8)
             tExit = min(tExit, -(dot(uClipPlane[i].xyz, p) + uClipPlane[i].w) / df);
     }
-    if (tExit <= 0.0) return 1.0;
+    if (tExit <= 0.0) return 0.0;
     float ds = tExit / float(uShadowSteps);
     float tau = 0.0;
     for (int i = 0; i < uShadowSteps; i++) {
         vec3 q = p + (float(i) + jitter) * ds * uLightDir;
         tau += pow(brightnessOf(evalPsi(q)), uOpacityPow) * ds;
     }
-    return exp(-uShadowDensity * tau / uRMax);
+    return uShadowDensity * tau / uRMax;
 }
 
-void main() {
-    // --- primary ray ---------------------------------------------------------
-    vec2 ndc = vUv * 2.0 - 1.0;
-    vec3 dir = normalize(uCamFwd
-                         + uTanHalfFov * (ndc.x * uAspect * uCamRight
-                                          + ndc.y * uCamUp));
-
-    // --- clip the ray to the domain ball r ≤ uRMax ---------------------------
-    float b = dot(uCamPos, dir);
-    float c = dot(uCamPos, uCamPos) - uRMax * uRMax;
-    float disc = b * b - c;
-
-    float t0 = 0.0, t1 = -1.0;
-    if (disc > 0.0) {
-        float sq = sqrt(disc);
-        t0 = max(-b - sq, 0.0);           // camera inside the ball ⇒ start at 0
-        t1 = -b + sq;
+// Wrenninge/Hillaire octave trick: higher scattering orders behave like the
+// same light seen through progressively *less* extinction with progressively
+// less energy — Σ aᵏ exp(−bᵏ τ), one τ for all octaves. Normalized so a fully
+// unshadowed sample returns 1 regardless of octave count.
+float multiScatterShadow(float tau) {
+    int n = max(uOctaves, 1);
+    float sum = 0.0, norm = 0.0, a = 1.0, b = 1.0;
+    for (int k = 0; k < n; k++) {
+        sum += a * exp(-b * tau);
+        norm += a;
+        a *= uOctaveGain;
+        b *= uOctaveExt;
     }
+    return sum / norm;
+}
 
-    // --- clip to the half-space planes (exact: linear in t) ------------------
-    for (int i = 0; i < uClipCount; i++) {
-        vec3 n = uClipPlane[i].xyz;
-        float f0 = dot(n, uCamPos) + uClipPlane[i].w;   // signed dist at t = 0
-        float df = dot(n, dir);                          // rate along the ray
-        if (abs(df) < 1e-8) {
-            if (f0 < 0.0) t1 = t0 - 1.0;   // parallel and outside: empty ray
-        } else {
-            float tc = -f0 / df;           // crossing parameter
-            if (df > 0.0) t0 = max(t0, tc);   // entering the kept side
-            else          t1 = min(t1, tc);   // leaving it
+// Mean short-range transmittance over a rotated Fibonacci direction set:
+// ≈ the fraction of the sky each point can see through the nearby medium.
+float ambientOcclusion(vec3 p, float rot) {
+    int nd = clamp(uAmbientDirs, 1, 12);
+    float R = uAmbientRadius * uRMax;
+    float sum = 0.0;
+    for (int i = 0; i < nd; i++) {
+        vec3 d = fibDir(i, nd, rot);
+        float tau = 0.0;
+        for (int s = 0; s < 4; s++) {
+            vec3 q = p + d * ((float(s) + 0.5) * 0.25) * R;
+            tau += pow(fieldBrightClipped(q), uOpacityPow) * (R * 0.25);
         }
+        sum += exp(-uAmbientDensity * tau / uRMax);
     }
+    return sum / float(nd);
+}
 
-    // --- march ---------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Isosurface helpers.
+// ---------------------------------------------------------------------------
+
+// Bisection refinement of a bracketed level crossing (6 halvings on top of
+// the marching step ⇒ sub-1/64-step surface placement).
+float refineHit(vec3 ro, vec3 rd, float ta, float tb, float level) {
+    float fa = fieldBright(ro + ta * rd) - level;
+    for (int i = 0; i < 6; i++) {
+        float tm = 0.5 * (ta + tb);
+        float fm = fieldBright(ro + tm * rd) - level;
+        if ((fm < 0.0) == (fa < 0.0)) { ta = tm; fa = fm; }
+        else tb = tm;
+    }
+    return 0.5 * (ta + tb);
+}
+
+// Shade one shell hit and composite it front-to-back into (accum, transmit).
+void shadeIsoHit(vec3 p, vec3 rd, float level, float jitter,
+                 inout vec3 accum, inout float transmit) {
+    vec2 psi = evalPsi(p);
+    float bri = brightnessOf(psi);
+    vec3 emit = emitColorLinear(psi, max(bri, level));
+
+    float h = max(uGradDelta, 1e-4) * uRMax;
+    vec3 g = fieldGradient(p, h);
+    vec3 N = -normalize(g + 1e-12);        // outward: brightness falls outward
+    vec3 V = -rd;
+    if (dot(N, V) < 0.0) N = -N;           // two-sided shells
+    float ndv = max(dot(N, V), 0.0);
+
+    vec3 c = uIsoEmission * emit;                          // self-glow
+    c += uIsoRim * pow(1.0 - ndv, 3.0) * emit;             // rim glow
+    if (uShadeModel > 0) {
+        // Lit shells: BRDF response to the key light, shadowed by the medium
+        // via the same octave sum the scatter integrator uses.
+        float sh = multiScatterShadow(lightOpticalDepth(p, jitter));
+        c += uLightGain * sh * shadeSurface(N, V, uLightDir, emit);
+    }
+    accum += transmit * uIsoAlpha * c;
+    transmit *= 1.0 - uIsoAlpha;
+}
+
+// ---------------------------------------------------------------------------
+void main() {
+    vec3 dir = primaryRay(vUv);
+
+    float t0, t1;
+    bool hitDomain = domainSegment(uCamPos, dir, t0, t1);
+
     vec3 bgLinear = uColorMode == 2 ? vec3(0.0) : rampColorLinear(0.0);
     vec3 color;
 
-    if (t1 <= t0) {
-        color = linearToSrgb(bgLinear);                  // empty ray
+    if (!hitDomain) {
+        color = linearToSrgb(bgLinear);                    // empty ray
     } else {
         float dt = (t1 - t0) / float(uSteps);
         float jitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy,
@@ -168,34 +224,134 @@ void main() {
             color = uColorMode == 2 ? phaseColor(atan(psiAtMax.y, psiAtMax.x), maxB)
                   : uColorMode == 1 ? rampColorSigned(maxB, psiAtMax.x)
                                     : rampColor(maxB);
+
+        } else if (uIntegrator == 4) {
+            // ---- Emissive isosurfaces. --------------------------------------
+            // March without jitter (surfaces are deterministic geometry; the
+            // bisection kills stepping error), detect all level crossings per
+            // step, shade them in ray order.
+            vec3 accum = vec3(0.0);
+            float transmit = 1.0;
+            float tPrev = t0;
+            float fPrev = fieldBright(uCamPos + t0 * dir);
+            for (int i = 1; i <= uSteps; i++) {
+                float t = t0 + float(i) * dt;
+                float f = fieldBright(uCamPos + t * dir);
+
+                // Gather crossings of every active level inside this step,
+                // sorted by their linear-interpolation position.
+                float hitT[MAX_SHELLS];
+                float hitL[MAX_SHELLS];
+                int nHits = 0;
+                float level = uIsoLevel;
+                for (int k = 0; k < uIsoCount && k < MAX_SHELLS; k++) {
+                    if ((fPrev - level) * (f - level) < 0.0) {
+                        float tEst = tPrev + dt * (level - fPrev) / (f - fPrev);
+                        int j = nHits;
+                        for (; j > 0 && hitT[j - 1] > tEst; j--) {
+                            hitT[j] = hitT[j - 1];
+                            hitL[j] = hitL[j - 1];
+                        }
+                        hitT[j] = tEst;
+                        hitL[j] = level;
+                        nHits++;
+                    }
+                    level *= uIsoSpacing;
+                }
+                for (int j = 0; j < nHits; j++) {
+                    float th = refineHit(uCamPos, dir, tPrev, t, hitL[j]);
+                    shadeIsoHit(uCamPos + th * dir, dir, hitL[j], jitter,
+                                accum, transmit);
+                }
+                if (transmit < 0.004) break;
+                tPrev = t;
+                fPrev = f;
+            }
+            color = displayTransform(accum + transmit * bgLinear);
+
+        } else if (uIntegrator == 3) {
+            // ---- MIDA (Bruckner & Gröller). ---------------------------------
+            // δ = the amount a sample raises the running maximum; β = 1 − δ
+            // damps what was accumulated before it, so each new "most
+            // important" structure shows through everything in front of it.
+            // uMidaGamma < 0 scales δ toward 0 (plain EA at −1); > 0 blends
+            // the result toward the pure MIP picture.
+            float vMax = 0.0;
+            vec3 accum = vec3(0.0);
+            float aAcc = 0.0;
+            float maxB = 0.0;
+            vec2 psiAtMax = vec2(0.0);
+            float dta = dt / uRMax;
+            for (int i = 0; i < uSteps; i++) {
+                vec3 p = uCamPos + (t0 + (float(i) + jitter) * dt) * dir;
+                vec2 psi = evalPsi(p);
+                float bri = brightnessOf(psi);
+                if (bri > maxB) { maxB = bri; psiAtMax = psi; }
+                float delta = max(bri - vMax, 0.0);
+                vMax = max(vMax, bri);
+                float beta = 1.0 - delta * (uMidaGamma < 0.0 ? 1.0 + uMidaGamma : 1.0);
+                float alpha = 1.0 - exp(-uDensityScale * pow(bri, uOpacityPow) * dta);
+                vec3 emit = emitColorLinear(psi, bri);
+                accum = beta * accum + (1.0 - beta * aAcc) * alpha * uEmissionGain * emit;
+                aAcc  = beta * aAcc  + (1.0 - beta * aAcc) * alpha;
+            }
+            color = displayTransform(accum + (1.0 - aAcc) * bgLinear);
+            if (uMidaGamma > 0.0) {
+                vec3 mip = uColorMode == 2 ? phaseColor(atan(psiAtMax.y, psiAtMax.x), maxB)
+                         : uColorMode == 1 ? rampColorSigned(maxB, psiAtMax.x)
+                                           : rampColor(maxB);
+                color = mix(color, mip, uMidaGamma);
+            }
+
         } else {
-            // ---- Emission–absorption, front-to-back (integrators 1 and 2). --
+            // ---- EA (1) and ambient multi-scattering (2), front-to-back. ----
             vec3 accum = vec3(0.0);
             float transmit = 1.0;
             float dta = dt / uRMax;        // step length in domain units, so
                                            // uDensityScale is extent-invariant
+            // View-independent per-ray factor: HG phase for the key light.
+            float hgFac = uIntegrator == 2 ? hgPhase4Pi(dot(uLightDir, dir), uHgG) : 1.0;
             for (int i = 0; i < uSteps; i++) {
                 vec3 p = uCamPos + (t0 + (float(i) + jitter) * dt) * dir;
                 vec2 psi = evalPsi(p);
                 float bri = brightnessOf(psi);
                 if (bri > 1e-4) {
                     float alpha = 1.0 - exp(-uDensityScale * pow(bri, uOpacityPow) * dta);
-                    vec3 emit = uColorMode == 2
-                        ? phaseColorLinear(atan(psi.y, psi.x), bri)
-                        : uColorMode == 1 ? srgbToLinear(rampColorSigned(bri, psi.x))
-                                          : rampColorLinear(bri);
-                    // Glow, plus (integrator 2) single-scattered key light
-                    // attenuated by the medium between p and the light.
+                    vec3 emit = emitColorLinear(psi, bri);
+                    // Glow, plus (integrator 2) the two scattered-light terms.
                     float w = uEmissionGain;
-                    if (uIntegrator == 2)
-                        w += uLightGain * lightTransmittance(p, jitter);
-                    accum += transmit * alpha * w * emit;
+                    if (uIntegrator == 2) {
+                        if (uLightGain > 0.0)
+                            w += uLightGain * hgFac
+                                 * multiScatterShadow(lightOpticalDepth(p, jitter));
+                        if (uAmbientGain > 0.0)
+                            w += uAmbientGain * ambientOcclusion(p, jitter * 6.2831853);
+                    }
+                    vec3 contrib = w * emit;
+                    // Surface-shading overlay: lit-surface response where the
+                    // field is locally shell-like (see header).
+                    if (uShadeModel > 0 && bri > 0.01) {
+                        float h = max(uGradDelta, 1e-4) * uRMax;
+                        vec3 g = fieldGradient(p, h);
+                        float gm = length(g);
+                        float conf = gradientConfidence(gm, bri);
+                        if (conf > 0.01) {
+                            vec3 N = -g / max(gm, 1e-9);
+                            vec3 V = -dir;
+                            if (dot(N, V) < 0.0) N = -N;
+                            float sh = uIntegrator == 2
+                                ? multiScatterShadow(lightOpticalDepth(p, jitter))
+                                : 1.0;
+                            contrib += uLightGain * sh * conf
+                                       * shadeSurface(N, V, uLightDir, emit);
+                        }
+                    }
+                    accum += transmit * alpha * contrib;
                     transmit *= 1.0 - alpha;
                     if (transmit < 0.004) break;         // early ray termination
                 }
             }
-            vec3 hdr = (accum + transmit * bgLinear) * exp2(uExposure);
-            color = uTonemap == 1 ? agxDisplay(hdr) : linearToSrgb(hdr);
+            color = displayTransform(accum + transmit * bgLinear);
         }
     }
 
