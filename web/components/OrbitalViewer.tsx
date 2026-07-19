@@ -53,8 +53,8 @@ function defaultParams() {
     n: 4,
     l: 2,
     m: 1,
-    mode: "real" as "real" | "complex",
-    color: "ramp" as "ramp" | "signed" | "phase",
+    mode: "complex" as "real" | "complex",
+    color: "signed" as "ramp" | "signed" | "phase",
     value: "density" as "density" | "amplitude",
     gamma: 0.71,
     dither: true,
@@ -63,7 +63,7 @@ function defaultParams() {
     phaseVivid: true,
     phaseChromaPow: 0.6,
     /** Canvas backing-store scale relative to CSS pixels × devicePixelRatio. */
-    renderScale: 1.0,
+    renderScale: 0.25,
 
     // Slice: presets use the CLI's exact axes; "custom" orients the plane
     // normal by azimuth/elevation, spins it with roll, and slides it along
@@ -80,8 +80,8 @@ function defaultParams() {
     // density range is deliberately narrow — beyond ~50 everything is fog
     // (the offline CLI still accepts anything, for bulk-structure looks).
     // "scatter" = EA + a self-shadowed key light; lightGain 0 recovers EA.
-    integrator: "mip" as "mip" | "ea" | "scatter",
-    steps: 400,
+    integrator: "ea" as "mip" | "ea" | "scatter",
+    steps: 64,
     density: 5,
     opacityPow: 2.15,
     emission: 6.7,
@@ -89,7 +89,7 @@ function defaultParams() {
     exposure: 0,
     lightAz: -30,
     lightEl: 50,
-    lightGain: 8,
+    lightGain: 0,
     shadowSteps: 24,
     shadowDensity: 120,
     fov: 40,
