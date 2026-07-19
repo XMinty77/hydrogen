@@ -147,6 +147,42 @@ vec3 srgbToLinear(vec3 c) {
 }
 
 // ---------------------------------------------------------------------------
+// AgX display transform (Troy Sobotka's AgX; the minimal-fit port after
+// Benjamin Wrensch/iolite). Maps linear-sRGB HDR to display-referred sRGB
+// with filmic highlight rolloff — the optional alternative (uTonemap = 1 in
+// volume.frag) to linearToSrgb's hard clamp, which flattens bright volumetric
+// cores into edged white discs. The sigmoid runs in a log2 encoding spanning
+// [-12.47, +4.03] EV, so multi-stop HDR accumulations compress gracefully.
+// ---------------------------------------------------------------------------
+
+// 6th-order fit of the default AgX contrast sigmoid.
+vec3 agxContrast(vec3 x) {
+    vec3 x2 = x * x;
+    vec3 x4 = x2 * x2;
+    return 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4
+         - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
+}
+
+vec3 agxDisplay(vec3 lin) {
+    const mat3 inset = mat3(       // "inset" gamut compression (column-major)
+        0.842479062253094, 0.0423282422610123, 0.0423756549057051,
+        0.0784335999999992, 0.878468636469772, 0.0784336,
+        0.0792237451477643, 0.0791661274605434, 0.879142973793104);
+    const mat3 outset = mat3(      // inverse inset, applied post-sigmoid
+        1.19687900512017, -0.0528968517574562, -0.0529716355144438,
+        -0.0980208811401368, 1.15190312990417, -0.0980434501171241,
+        -0.0990297440797205, -0.0989611768448433, 1.15107367264116);
+    const float minEv = -12.47393;
+    const float maxEv = 4.026069;
+    vec3 v = inset * max(lin, 1e-10);
+    v = (clamp(log2(v), minEv, maxEv) - minEv) / (maxEv - minEv);
+    // The sigmoid's output approximates 2.2-encoded display values, so after
+    // the outset no further sRGB encode is applied (we write to a plain RGBA8
+    // target, not an sRGB framebuffer).
+    return clamp(outset * agxContrast(v), 0.0, 1.0);
+}
+
+// ---------------------------------------------------------------------------
 // Palettes.
 // ---------------------------------------------------------------------------
 

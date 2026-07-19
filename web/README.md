@@ -28,12 +28,15 @@ reload, nothing else to do.
 - **2D slice** — presets xz, xy, yz or a fully custom plane (azimuth,
   elevation, roll, offset along the normal). Drag rotates the plane, wheel
   zooms.
-- **3D volume** — MIP or emission–absorption; steps/density/opacity/emission;
-  two clip planes (axis: view forward/right/up + offset + flip), world-fixed
-  at the starting camera's axes by default, each optionally locked to the
-  live camera ("lock to camera"). Orbit camera (drag + wheel) or FPS fly
-  camera (click to capture the mouse, WASD + E/Q, Shift = fast, Esc
-  releases).
+- **3D volume** — MIP, emission–absorption, or shadowed scattering ("scatter":
+  EA plus a directional key light with self-shadowing — see the "key light"
+  folder: direction, gain, shadow steps, shadow density); steps/density/
+  opacity/emission; display transform per integrator output: plain gamma
+  ("gamma", default) or AgX filmic ("agx"), with an EV exposure slider; two
+  clip planes (axis: view forward/right/up + offset + flip), world-fixed at
+  the starting camera's axes by default, each optionally locked to the live
+  camera ("lock to camera"). Orbit camera (drag + wheel) or FPS fly camera
+  (click to capture the mouse, WASD + E/Q, Shift = fast, Esc releases).
 
 ## URL parameters
 
@@ -43,7 +46,14 @@ Every control is scriptable — the vocabulary mirrors the offline CLI
 ```
 ?view=volume&state=4,2,1&mode=complex&camera=35,25,2.6&integrator=mip&steps=600
 ?view=slice&state=5,3,2&plane=custom&az=45&el=30&roll=15&zoom=1.6
+?view=volume&state=10,4,0&integrator=scatter&tonemap=agx&lightAz=-30&lightEl=50
 ```
+
+The address bar also **mirrors the live view**: as you explore, the query
+string updates in place (only values that differ from the defaults), so the
+current picture is always copyable as a link. Volume extras: `integrator=
+mip|ea|scatter`, `tonemap=gamma|agx`, `exposure` (EV), and for scatter
+`lightAz`/`lightEl` (degrees), `lightGain`, `shadowSteps`, `shadowDensity`.
 
 `size=N` fixes the canvas at N×N pixels and renders a single frame — the
 deterministic screenshot mode used by the harness:

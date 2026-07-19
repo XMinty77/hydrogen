@@ -30,11 +30,17 @@
 //   --camera AZ,EL,DIST  orbit camera: azimuth/elevation degrees, distance in
 //                        multiples of the framing radius (default 35,25,2.6)
 //   --fov F              vertical field of view, degrees (default 40)
-//   --integrator mip|ea                            (default mip)
+//   --integrator mip|ea|scatter                    (default mip)
 //   --steps N            ray samples               (default 600)
 //   --density F          EA extinction scale       (default 5)
 //   --opacity-pow F      EA opacity exponent       (default 2.15)
 //   --emission F         EA emission gain          (default 6.7)
+//   --tonemap gamma|agx  EA/scatter display transform (default gamma)
+//   --exposure F         EV shift before the tonemap  (default 0)
+//   --light AZ,EL        scatter key-light direction  (default -30,50)
+//   --light-gain F       scattered-light gain         (default 8)
+//   --shadow-steps N     samples per shadow ray       (default 24)
+//   --shadow-density F   shadow-ray extinction scale  (default 120)
 //   --clip nx,ny,nz,d    half-space clip plane, repeatable up to twice;
 //                        keeps the side where n·p + d ≥ 0
 // =============================================================================
@@ -172,6 +178,8 @@ else
     // distance in framing radii, always looking at the origin with world-up z.
     double[] cam = Get("camera", "35,25,2.6").Split(',').Select(double.Parse).ToArray();
     if (cam.Length != 3) throw new ArgumentException("--camera needs AZ,EL,DIST");
+    double[] light = Get("light", "-30,50").Split(',').Select(double.Parse).ToArray();
+    if (light.Length != 2) throw new ArgumentException("--light needs AZ,EL");
     double az = cam[0] * Math.PI / 180, el = cam[1] * Math.PI / 180;
     double dist = cam[2] * asset.FramingRadius(n);
 
@@ -203,12 +211,24 @@ else
         {
             "mip" => 0,
             "ea" => 1,
+            "scatter" => 2,
             var s => throw new ArgumentException($"unknown integrator '{s}'"),
         },
         Steps = int.Parse(Get("steps", "600")),
         DensityScale = double.Parse(Get("density", "5")),
         OpacityPow = double.Parse(Get("opacity-pow", "2.15")),
         EmissionGain = double.Parse(Get("emission", "6.7")),
+        Tonemap = Get("tonemap", "gamma") switch
+        {
+            "gamma" => 0,
+            "agx" => 1,
+            var s => throw new ArgumentException($"unknown tonemap '{s}'"),
+        },
+        ExposureEv = double.Parse(Get("exposure", "0")),
+        LightAzDeg = light[0], LightElDeg = light[1],
+        LightGain = double.Parse(Get("light-gain", "8")),
+        ShadowSteps = int.Parse(Get("shadow-steps", "24")),
+        ShadowDensity = double.Parse(Get("shadow-density", "120")),
         ClipPlanes = clips,
     });
     defaultOut = Path.Combine("gallery", "volumes",

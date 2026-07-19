@@ -20,14 +20,20 @@ For each state |n, l, m⟩ (n ≤ 10):
 
 ### 3D volumetric (volume renderer)
 
+Camera views (iteration 4, user 2026-07-19): **q34** (az 35°, el 25°, 2.6×),
+**side** (az 0°, el 0° — perfectly horizontal, 2.6×), **side_tilt** (az 0°,
+el 15°, 2.6×), **diag_side** (az 0°, el 60° — 30° down from the top, no
+azimuthal rotation, 2.9×), **top** (az 35°, el 78°, 3.1×). Distances in
+framing radii; diag_side's 2.9× was crop-checked on (10,9,0) and (10,4,0).
+
 | # | Image | Integrator | View | Rationale |
 |---|-------|-----------|------|-----------|
-| 5–7 | real, ramp | MIP | ¾ (az 35°, el 25°), side (az 0°, el 8°), top (az 35°, el 78°) | The signature glowing-cloud look, three angles. MIP is **ramp-only** (user, 2026-07-19): the max-density sample carries no depth context, so signed/phase hues at it read as arbitrary. |
-| 8–10 | real, **signed** | **EA** | same three angles | Lobe signs in 3D as translucent glowing gas (moved off MIP, iteration 3). |
-| 11 | real, ramp | **EA** | ¾ | The translucent glowing-gas render with depth/occlusion. |
-| 12 | real, ramp | **EA + half-cut** (clip plane removes y > 0) | ¾ | The checkbook's "3D crossection": interior structure through a cutaway, volumetrically. |
-| 13 | real, signed | EA + half-cut | ¾ | Signed cutaway. |
-| 14 | complex, phase | **EA** | ¾ | The phase torus/cloud as glowing gas. At the tuned low density the front/back phase-cancellation desaturation that once made MIP the complex default is minor (verified on (5,3,3), 2026-07-19). |
+| 5–9 | real, ramp | MIP | all five | The signature glowing-cloud look. MIP is **ramp-only** (user, 2026-07-19): the max-density sample carries no depth context, so signed/phase hues at it read as arbitrary. |
+| 10–14 | real, **signed** | **EA** | all five | Lobe signs in 3D as translucent glowing gas (moved off MIP, iteration 3). |
+| 15 | real, ramp | **EA** | ¾ | The translucent glowing-gas render with depth/occlusion. |
+| 16 | real, ramp | **EA + half-cut** (clip plane removes y > 0) | ¾ | The checkbook's "3D crossection": interior structure through a cutaway, volumetrically. |
+| 17 | real, signed | EA + half-cut | ¾ | Signed cutaway. |
+| 18 | complex, phase | **EA** | ¾ | The phase torus/cloud as glowing gas. At the tuned low density the front/back phase-cancellation desaturation that once made MIP the complex default is minor (verified on (5,3,3), 2026-07-19). |
 
 ### Not included per-state (deliberate)
 
@@ -49,8 +55,8 @@ states). But the −m images are exact transforms of the +m ones:
   #1/#3 (xz) differ only trivially, #2/#4 are in-plane rotations.
 
 **Decision (user, 2026-07-18): Option A** — m ∈ {0 … l}: 220 states,
-14 images each (13 when the xy slice is parity-skipped; counts as of
-iteration 3), ~2,985 images. The −m transforms are documented in the
+18 images each (17 when the xy slice is parity-skipped; counts as of
+iteration 4), 3,865 images. The −m transforms are documented in the
 gallery index.
 
 ## Mechanics
@@ -65,6 +71,24 @@ gallery index.
   → re-runs are byte-identical; the draft→final rerun changes resolution only.
 - **Draft pass**: 1024² (user-approved), then composition review, then the
   final-resolution run (resolution decided after the draft looks right).
+
+## Iteration 4 (user, 2026-07-19 — views + technique prototypes)
+
+- **Five camera views** (was three): side is now perfectly horizontal
+  (el 0°), a slightly-tilted secondary side view (el 15°) and a diagonal
+  side view (el 60° — 30° down from the top, no azimuthal rotation, 2.9×
+  distance) join the set. 18 images per state (17 with the parity skip),
+  3,865 total.
+- **Technique prototypes shipped as opt-ins, not gallery changes** (pending
+  user judgment through the web demo): `--tonemap agx` (AgX filmic display
+  transform for the volumetric integrators; the plain gamma/clamp stays the
+  default), `--integrator scatter` (EA plus a self-shadowed directional key
+  light — `--light AZ,EL`, `--light-gain`, `--shadow-steps`,
+  `--shadow-density`; the plain EA integrator is untouched, per the user's
+  explicit request), and `--exposure` (EV shift ahead of either tonemap).
+  Shadow extinction is decoupled from the viewing density: at density 5 the
+  medium is optically thin, so shadow rays use their own much larger scale
+  (default 120) — without it self-shadowing tops out at ~10%.
 
 ## Iteration 3 (user, 2026-07-19 — second web-demo round)
 

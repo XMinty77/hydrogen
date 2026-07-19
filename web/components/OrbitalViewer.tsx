@@ -79,11 +79,19 @@ function defaultParams() {
     // Volume. EA defaults are the user-tuned values of 2026-07-19; the
     // density range is deliberately narrow — beyond ~50 everything is fog
     // (the offline CLI still accepts anything, for bulk-structure looks).
-    integrator: "mip" as "mip" | "ea",
+    // "scatter" = EA + a self-shadowed key light; lightGain 0 recovers EA.
+    integrator: "mip" as "mip" | "ea" | "scatter",
     steps: 400,
     density: 5,
     opacityPow: 2.15,
     emission: 6.7,
+    tonemap: "gamma" as "gamma" | "agx",
+    exposure: 0,
+    lightAz: -30,
+    lightEl: 50,
+    lightGain: 8,
+    shadowSteps: 24,
+    shadowDensity: 120,
     fov: 40,
     clips: [
       { enabled: false, axis: "forward", offset: 0, flip: false, camLock: false },
@@ -94,6 +102,8 @@ function defaultParams() {
 type Params = ReturnType<typeof defaultParams>;
 
 const COLOR_MODE = { ramp: 0, signed: 1, phase: 2 } as const;
+const INTEGRATOR = { mip: 0, ea: 1, scatter: 2 } as const;
+const TONEMAP = { gamma: 0, agx: 1 } as const;
 
 /** Apply ?key=value overrides (see file header). Unknown keys are ignored. */
 function applyUrlOverrides(p: Params, search: string) {
@@ -132,11 +142,18 @@ function applyUrlOverrides(p: Params, search: string) {
   num("offset", (v) => (p.sliceOffset = v));
   num("zoom", (v) => (p.sliceZoom = v));
 
-  str("integrator", ["mip", "ea"], (v) => (p.integrator = v));
+  str("integrator", ["mip", "ea", "scatter"], (v) => (p.integrator = v));
   num("steps", (v) => (p.steps = Math.round(v)));
   num("density", (v) => (p.density = v));
   num("opacityPow", (v) => (p.opacityPow = v));
   num("emission", (v) => (p.emission = v));
+  str("tonemap", ["gamma", "agx"], (v) => (p.tonemap = v));
+  num("exposure", (v) => (p.exposure = v));
+  num("lightAz", (v) => (p.lightAz = v));
+  num("lightEl", (v) => (p.lightEl = v));
+  num("lightGain", (v) => (p.lightGain = v));
+  num("shadowSteps", (v) => (p.shadowSteps = Math.round(v)));
+  num("shadowDensity", (v) => (p.shadowDensity = v));
   num("fov", (v) => (p.fov = v));
 
   // clip=axis,offset[,flip[,camLock]] — repeatable (first → clip A, …).
@@ -331,12 +348,21 @@ export default function OrbitalViewer() {
       fSlice.add(params, "sliceZoom", 0.5, 20, 0.01).listen();
 
       const fVolume = gui.addFolder("volume");
-      fVolume.add(params, "integrator", ["mip", "ea"]);
+      fVolume.add(params, "integrator", ["mip", "ea", "scatter"]);
       fVolume.add(params, "steps", 64, 1200, 1);
       fVolume.add(params, "density", 1, 50, 0.5);
       fVolume.add(params, "opacityPow", 0.5, 4, 0.05);
       fVolume.add(params, "emission", 0.1, 20, 0.05);
+      fVolume.add(params, "tonemap", ["gamma", "agx"]);
+      fVolume.add(params, "exposure", -4, 4, 0.05);
       fVolume.add(params, "fov", 20, 90, 1);
+
+      const fLight = gui.addFolder("key light").close();
+      fLight.add(params, "lightAz", -180, 180, 1);
+      fLight.add(params, "lightEl", -89, 89, 1);
+      fLight.add(params, "lightGain", 0, 30, 0.1);
+      fLight.add(params, "shadowSteps", 4, 64, 1);
+      fLight.add(params, "shadowDensity", 0, 400, 1);
 
       const fCamera = gui.addFolder("camera");
       // Bound to a proxy, not rig.mode: lil-gui writes the bound property
@@ -368,7 +394,7 @@ export default function OrbitalViewer() {
         const vol = params.view === "volume";
         (vol ? fSlice : fVolume).hide();
         (vol ? fVolume : fSlice).show();
-        for (const f of [fCamera, fClipA, fClipB]) if (vol) f.show(); else f.hide();
+        for (const f of [fLight, fCamera, fClipA, fClipB]) if (vol) f.show(); else f.hide();
       }
       syncFolders();
 
@@ -445,6 +471,82 @@ export default function OrbitalViewer() {
         canvas.style.width = canvas.style.height = `${fixedSize}px`;
       }
 
+      // ------------------------------------------------- URL state writeback
+      // The address bar mirrors the live view (user request 2026-07-19), so
+      // any moment of exploration is copyable as a link. Only values that
+      // differ from the defaults are written — the same vocabulary
+      // applyUrlOverrides reads back — and only for the active view, keeping
+      // URLs short. replaceState (no pushState) leaves history untouched.
+      const urlDefaults = defaultParams();
+      let lastQuery: string | null = null;
+      const syncUrl = () => {
+        const p = params;
+        const d = urlDefaults;
+        const q = new URLSearchParams();
+        const r = (v: number, digits = 3) => +v.toFixed(digits);
+        if (p.n !== d.n || p.l !== d.l || p.m !== d.m)
+          q.set("state", `${p.n},${p.l},${p.m}`);
+        if (p.view !== d.view) q.set("view", p.view);
+        if (p.mode !== d.mode) q.set("mode", p.mode);
+        // color is implied by mode (real→ramp, complex→phase) unless changed.
+        if (p.color !== (p.mode === "real" ? "ramp" : "phase")) q.set("color", p.color);
+        if (p.value !== d.value) q.set("value", p.value);
+        if (p.gamma !== d.gamma) q.set("gamma", `${r(p.gamma)}`);
+        if (p.ramp !== d.ramp) q.set("ramp", p.ramp);
+        if (p.rampSpace !== d.rampSpace) q.set("rampSpace", p.rampSpace);
+        if (!p.phaseVivid) q.set("vivid", "0");
+        if (p.phaseChromaPow !== d.phaseChromaPow) q.set("chromaPow", `${r(p.phaseChromaPow)}`);
+        if (!p.dither) q.set("dither", "0");
+        if (p.renderScale !== d.renderScale) q.set("scale", `${r(p.renderScale)}`);
+        if (p.view === "slice") {
+          if (p.slicePlane !== d.slicePlane) q.set("plane", p.slicePlane);
+          if (p.slicePlane === "custom") {
+            q.set("az", `${r(p.sliceAz, 1)}`);
+            q.set("el", `${r(p.sliceEl, 1)}`);
+            if (p.sliceRoll !== 0) q.set("roll", `${r(p.sliceRoll, 1)}`);
+          }
+          if (p.sliceOffset !== 0) q.set("offset", `${r(p.sliceOffset)}`);
+          if (p.sliceZoom !== 1) q.set("zoom", `${r(p.sliceZoom, 2)}`);
+        } else {
+          if (p.integrator !== d.integrator) q.set("integrator", p.integrator);
+          if (p.steps !== d.steps) q.set("steps", `${p.steps}`);
+          if (p.density !== d.density) q.set("density", `${r(p.density, 2)}`);
+          if (p.opacityPow !== d.opacityPow) q.set("opacityPow", `${r(p.opacityPow, 2)}`);
+          if (p.emission !== d.emission) q.set("emission", `${r(p.emission, 2)}`);
+          if (p.tonemap !== d.tonemap) q.set("tonemap", p.tonemap);
+          if (p.exposure !== d.exposure) q.set("exposure", `${r(p.exposure, 2)}`);
+          if (p.integrator === "scatter") {
+            if (p.lightAz !== d.lightAz) q.set("lightAz", `${r(p.lightAz, 1)}`);
+            if (p.lightEl !== d.lightEl) q.set("lightEl", `${r(p.lightEl, 1)}`);
+            if (p.lightGain !== d.lightGain) q.set("lightGain", `${r(p.lightGain, 1)}`);
+            if (p.shadowSteps !== d.shadowSteps) q.set("shadowSteps", `${p.shadowSteps}`);
+            if (p.shadowDensity !== d.shadowDensity)
+              q.set("shadowDensity", `${r(p.shadowDensity, 1)}`);
+          }
+          if (p.fov !== d.fov) q.set("fov", `${r(p.fov, 1)}`);
+          // Camera: only the orbit pose has a URL form (fly is transient).
+          if (rig.mode === "orbit") {
+            const az = r(rig.azDeg, 1), el = r(rig.elDeg, 1), dist = r(rig.dist, 2);
+            if (az !== 35 || el !== 25 || dist !== 2.6)
+              q.set("camera", `${az},${el},${dist}`);
+          }
+          for (const c of p.clips) {
+            if (!c.enabled) continue;
+            let spec = `${c.axis},${r(c.offset)}`;
+            if (c.flip || c.camLock) spec += `,${c.flip ? 1 : 0}`;
+            if (c.camLock) spec += ",1";
+            q.append("clip", spec);
+          }
+        }
+        // Commas are query-safe; keep them readable (?state=4,2,1 — the
+        // documented style) instead of URLSearchParams' %2C.
+        const query = q.toString().replace(/%2C/gi, ",");
+        if (query !== lastQuery) {
+          lastQuery = query;
+          history.replaceState(null, "", query ? `?${query}` : location.pathname);
+        }
+      };
+
       let lastT = performance.now();
       let emaMs = 0;
       let statsAge = 0;
@@ -488,11 +590,18 @@ export default function OrbitalViewer() {
             camUp: pose.up,
             camFwd: pose.fwd,
             fovYDeg: params.fov,
-            integrator: params.integrator === "ea" ? 1 : 0,
+            integrator: INTEGRATOR[params.integrator],
             steps: params.steps,
             densityScale: params.density,
             opacityPow: params.opacityPow,
             emissionGain: params.emission,
+            tonemap: TONEMAP[params.tonemap],
+            exposureEv: params.exposure,
+            lightAzDeg: params.lightAz,
+            lightElDeg: params.lightEl,
+            lightGain: params.lightGain,
+            shadowSteps: params.shadowSteps,
+            shadowDensity: params.shadowDensity,
             clipPlanes: clipPlaneVectors(params.clips, pose, basePose, framing()),
           });
         }
@@ -500,6 +609,7 @@ export default function OrbitalViewer() {
         emaMs = emaMs === 0 ? dt * 1000 : emaMs * 0.9 + dt * 1000 * 0.1;
         if ((statsAge += dt) > 0.25) {
           statsAge = 0;
+          if (!fixedSize) syncUrl();
           const help =
             params.view === "slice"
               ? "drag: rotate plane · wheel: zoom"

@@ -18,6 +18,17 @@
 //     palette color (in linear RGB — compositing gamma-encoded values would
 //     be photometrically wrong) and occludes what lies behind it via
 //     Beer–Lambert extinction. The glowing-gas look.
+//   2 Shadowed scattering — the EA integrator plus a white directional key
+//     light: each sample additionally scatters uLightGain · T_L of light,
+//     where T_L is the Beer–Lambert transmittance along a secondary ray
+//     toward uLightDir (uShadowSteps coarse samples). Shells self-shadow —
+//     the depth cue plain EA lacks. The glow term (uEmissionGain) is
+//     untouched, so integrator 1's look is exactly recoverable.
+//
+// Display transform (EA/scatter only; MIP output is LDR by construction):
+//   uTonemap 0 — linearToSrgb with a hard [0,1] clamp (the original look);
+//   uTonemap 1 — AgX filmic (common.glsl) for highlight rolloff.
+//   uExposure shifts the HDR accumulation by 2^EV before either transform.
 //
 // Sampling: per-pixel IGN jitter of the step offset decorrelates the marching
 // grid between neighboring pixels — banding becomes fine noise, which the
@@ -45,6 +56,17 @@ uniform float uEmissionGain;   // EA: emission multiplier; > 1 lets dense cores
 uniform int uColorMode;        // 0 ramp, 1 signed (real), 2 phase (complex)
 uniform vec4 uClipPlane[2];    // half-spaces: keep where dot(n, p) + w ≥ 0
 uniform int uClipCount;        // 0, 1, or 2 active planes
+uniform int uTonemap;          // 0 linearToSrgb clamp, 1 AgX filmic
+uniform float uExposure;       // EV shift on the HDR accumulation (2^EV)
+uniform vec3 uLightDir;        // scatter: unit vector from scene toward light
+uniform float uLightGain;      // scatter: scattered-light gain
+uniform int uShadowSteps;      // scatter: samples along each shadow ray
+uniform float uShadowDensity;  // scatter: extinction scale for shadow rays,
+                               // decoupled from uDensityScale — the tuned
+                               // viewing density leaves the medium optically
+                               // thin (glow-dominated), which would make
+                               // self-shadowing invisibly weak (~10%); shadow
+                               // rays need an extinction of their own.
 
 in vec2 vUv;
 out vec4 fragColor;
@@ -61,6 +83,32 @@ vec3 phaseColorLinear(float phase, float bright) {
     float C = (uPhaseVivid ? lookupTable(uPhaseCmaxTab, fract(hue / (2.0 * PI)))
                            : uPhaseC) * pow(bright, uPhaseChromaPow);
     return max(oklabToLinearSrgb(vec3(uPhaseL * bright, C * cos(hue), C * sin(hue))), 0.0);
+}
+
+// Beer–Lambert transmittance from p toward the key light: the extinction the
+// primary integrator uses, accumulated over the chord to the domain boundary
+// with uShadowSteps jittered samples (coarse is fine — the result modulates
+// emission smoothly). p is always on the kept side of the clip planes; where
+// the shadow ray leaves a kept half-space the material ends (cut-away gas
+// casts no shadow), so only the leaving intersection clips the chord.
+float lightTransmittance(vec3 p, float jitter) {
+    float b = dot(p, uLightDir);
+    float disc = b * b - (dot(p, p) - uRMax * uRMax);
+    if (disc <= 0.0) return 1.0;
+    float tExit = -b + sqrt(disc);
+    for (int i = 0; i < uClipCount; i++) {
+        float df = dot(uClipPlane[i].xyz, uLightDir);
+        if (df < -1e-8)
+            tExit = min(tExit, -(dot(uClipPlane[i].xyz, p) + uClipPlane[i].w) / df);
+    }
+    if (tExit <= 0.0) return 1.0;
+    float ds = tExit / float(uShadowSteps);
+    float tau = 0.0;
+    for (int i = 0; i < uShadowSteps; i++) {
+        vec3 q = p + (float(i) + jitter) * ds * uLightDir;
+        tau += pow(brightnessOf(evalPsi(q)), uOpacityPow) * ds;
+    }
+    return exp(-uShadowDensity * tau / uRMax);
 }
 
 void main() {
@@ -121,7 +169,7 @@ void main() {
                   : uColorMode == 1 ? rampColorSigned(maxB, psiAtMax.x)
                                     : rampColor(maxB);
         } else {
-            // ---- Emission–absorption, front-to-back. ------------------------
+            // ---- Emission–absorption, front-to-back (integrators 1 and 2). --
             vec3 accum = vec3(0.0);
             float transmit = 1.0;
             float dta = dt / uRMax;        // step length in domain units, so
@@ -136,12 +184,18 @@ void main() {
                         ? phaseColorLinear(atan(psi.y, psi.x), bri)
                         : uColorMode == 1 ? srgbToLinear(rampColorSigned(bri, psi.x))
                                           : rampColorLinear(bri);
-                    accum += transmit * alpha * uEmissionGain * emit;
+                    // Glow, plus (integrator 2) single-scattered key light
+                    // attenuated by the medium between p and the light.
+                    float w = uEmissionGain;
+                    if (uIntegrator == 2)
+                        w += uLightGain * lightTransmittance(p, jitter);
+                    accum += transmit * alpha * w * emit;
                     transmit *= 1.0 - alpha;
                     if (transmit < 0.004) break;         // early ray termination
                 }
             }
-            color = linearToSrgb(accum + transmit * bgLinear);
+            vec3 hdr = (accum + transmit * bgLinear) * exp2(uExposure);
+            color = uTonemap == 1 ? agxDisplay(hdr) : linearToSrgb(hdr);
         }
     }
 

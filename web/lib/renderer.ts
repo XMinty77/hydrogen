@@ -58,12 +58,23 @@ export interface VolumeParams {
   camUp: Vec3;
   camFwd: Vec3;
   fovYDeg: number;
-  /** 0 MIP, 1 emission–absorption. */
+  /** 0 MIP, 1 emission–absorption, 2 shadowed scattering (EA + key light). */
   integrator: number;
   steps: number;
   densityScale: number;
   opacityPow: number;
   emissionGain: number;
+  /** 0 linearToSrgb clamp, 1 AgX filmic — EA/scatter output only. */
+  tonemap: number;
+  /** EV shift (2^EV) on the HDR accumulation before the tonemap. */
+  exposureEv: number;
+  /** Key-light direction, orbit-camera spherical convention (degrees). */
+  lightAzDeg: number;
+  lightElDeg: number;
+  lightGain: number;
+  shadowSteps: number;
+  /** Shadow-ray extinction scale, decoupled from densityScale (see shader). */
+  shadowDensity: number;
   /** Up to two half-space planes (nx, ny, nz, w): keep n·p + w ≥ 0. */
   clipPlanes: [number, number, number, number][];
 }
@@ -220,6 +231,16 @@ export class OrbitalRenderer {
       uDensityScale: p.densityScale,
       uOpacityPow: p.opacityPow,
       uEmissionGain: p.emissionGain,
+      uTonemap: p.tonemap,
+      uExposure: p.exposureEv,
+      uLightDir: (() => {
+        const az = (p.lightAzDeg * Math.PI) / 180;
+        const el = (p.lightElDeg * Math.PI) / 180;
+        return [Math.cos(el) * Math.cos(az), Math.cos(el) * Math.sin(az), Math.sin(el)];
+      })(),
+      uLightGain: p.lightGain,
+      uShadowSteps: p.shadowSteps,
+      uShadowDensity: p.shadowDensity,
       uClipPlane: clip,
       uClipCount: Math.min(p.clipPlanes.length, 2),
     });

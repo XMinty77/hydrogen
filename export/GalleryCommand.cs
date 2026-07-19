@@ -4,7 +4,7 @@
 //
 // Implements docs/gallery-spec.md: for every state |n, l, m⟩ with n ≤ n_max
 // and m ≥ 0 (the −m images are exact transforms; see the spec), renders the
-// 14-image set (13 when the equatorial slice is parity-skipped) into
+// 18-image set (17 when the equatorial slice is parity-skipped) into
 //   gallery/stills/n{n}/l{l}/m{m}/*.png
 // and writes one static HTML contact sheet per n plus a master index.
 //
@@ -30,9 +30,11 @@ public static class GalleryCommand
     /// the ¾ view, and 2.6× was measured to crop bright structure at n = 10.</summary>
     private static readonly (string name, double az, double el, double dist)[] Views =
     [
-        ("q34", 35, 25, 2.6),    // canonical ¾
-        ("side", 0, 8, 2.6),     // profile of the polar structure
-        ("top", 35, 78, 3.1),    // down the z-axis
+        ("q34", 35, 25, 2.6),       // canonical ¾
+        ("side", 0, 0, 2.6),        // perfectly horizontal profile (user, 2026-07-19)
+        ("side_tilt", 0, 15, 2.6),  // secondary side view, slightly tilted
+        ("diag_side", 0, 60, 2.9),  // 30° down from the top, no azimuthal rotation
+        ("top", 35, 78, 3.1),       // down the z-axis
     ];
 
     public static int Run(string root, HorbAsset asset, PaletteSet palettes,
@@ -170,7 +172,7 @@ public static class GalleryCommand
                 Save(Path.Combine(dir, "3d_ea_complex_q34.png"),
                      Volume(false, 2, cAz, cEl, cDist, 1, false));
 
-                images += (l - m) % 2 == 0 ? 14 : 13;
+                images += (l - m) % 2 == 0 ? 18 : 17;
             }
 
             if (only == null)
@@ -230,9 +232,11 @@ public static class GalleryCommand
     private static readonly string[] ImageOrder =
     [
         "2d_real_xz", "2d_real_xy", "2d_signed_xz", "2d_complex_phase",
-        "3d_mip_real_q34", "3d_mip_real_side", "3d_mip_real_top",
+        "3d_mip_real_q34", "3d_mip_real_side", "3d_mip_real_side_tilt",
+        "3d_mip_real_diag_side", "3d_mip_real_top",
         "3d_ea_real_q34", "3d_ea_real_cut",
-        "3d_ea_signed_q34", "3d_ea_signed_side", "3d_ea_signed_top",
+        "3d_ea_signed_q34", "3d_ea_signed_side", "3d_ea_signed_side_tilt",
+        "3d_ea_signed_diag_side", "3d_ea_signed_top",
         "3d_ea_signed_cut", "3d_ea_complex_q34",
     ];
 
