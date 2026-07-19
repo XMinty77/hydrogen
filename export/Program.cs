@@ -11,7 +11,7 @@
 //   --mode real|complex                            (default real)
 //   --color ramp|signed|phase   (default: ramp for real, phase for complex)
 //   --size W[xH]        output pixels              (default 1024)
-//   --gamma F           brightening exponent       (default 0.45)
+//   --gamma F           brightening exponent       (default 0.71)
 //   --value density|amplitude                      (default density)
 //   --ramp NAME         palette ramp name          (default accretion_tuned)
 //   --ramp-space oklab|srgb   stop interpolation   (default oklab)
@@ -34,7 +34,7 @@
 //   --steps N            ray samples               (default 600)
 //   --density F          EA extinction scale       (default 5)
 //   --opacity-pow F      EA opacity exponent       (default 2.15)
-//   --emission F         EA emission gain          (default 5)
+//   --emission F         EA emission gain          (default 6.7)
 //   --clip nx,ny,nz,d    half-space clip plane, repeatable up to twice;
 //                        keeps the side where n·p + d ≥ 0
 // =============================================================================
@@ -128,7 +128,7 @@ var common = new CommonParams
     Width = width, Height = height,
     RampName = Get("ramp", "accretion_tuned"),
     RampSpaceSrgb = Get("ramp-space", "oklab") == "srgb",
-    Gamma = double.Parse(Get("gamma", "0.45")),
+    Gamma = double.Parse(Get("gamma", "0.71")),
     ValueMode = Get("value", "density") == "amplitude" ? 1 : 0,
     Dither = !flags.Contains("no-dither"),
     PhaseVivid = !flags.Contains("phase-constant"),
@@ -145,11 +145,15 @@ if (command == "slice")
         ? double.Parse(extStr)
         : asset.FramingRadius(n);
     double offset = double.Parse(Get("offset", "0"));
+    // Non-square outputs keep square pixels: U spans the width, V the height,
+    // so U carries the aspect factor (the vertical extent is the anchor — the
+    // same convention as the volume renderer's vertical FOV).
+    double extentU = extent * width / height;
     var (origin, axisU, axisV) = Get("plane", "xz") switch
     {
-        "xz" => ((0.0, offset, 0.0), (extent, 0.0, 0.0), (0.0, 0.0, extent)),
-        "xy" => ((0.0, 0.0, offset), (extent, 0.0, 0.0), (0.0, extent, 0.0)),
-        "yz" => ((offset, 0.0, 0.0), (0.0, extent, 0.0), (0.0, 0.0, extent)),
+        "xz" => ((0.0, offset, 0.0), (extentU, 0.0, 0.0), (0.0, 0.0, extent)),
+        "xy" => ((0.0, 0.0, offset), (extentU, 0.0, 0.0), (0.0, extent, 0.0)),
+        "yz" => ((offset, 0.0, 0.0), (0.0, extentU, 0.0), (0.0, 0.0, extent)),
         var s => throw new ArgumentException($"unknown plane '{s}'"),
     };
 
@@ -204,7 +208,7 @@ else
         Steps = int.Parse(Get("steps", "600")),
         DensityScale = double.Parse(Get("density", "5")),
         OpacityPow = double.Parse(Get("opacity-pow", "2.15")),
-        EmissionGain = double.Parse(Get("emission", "5")),
+        EmissionGain = double.Parse(Get("emission", "6.7")),
         ClipPlanes = clips,
     });
     defaultOut = Path.Combine("gallery", "volumes",

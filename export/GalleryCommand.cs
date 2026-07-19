@@ -4,7 +4,7 @@
 //
 // Implements docs/gallery-spec.md: for every state |n, l, m⟩ with n ≤ n_max
 // and m ≥ 0 (the −m images are exact transforms; see the spec), renders the
-// 15-image set (14 when the equatorial slice is parity-skipped) into
+// 14-image set (13 when the equatorial slice is parity-skipped) into
 //   gallery/stills/n{n}/l{l}/m{m}/*.png
 // and writes one static HTML contact sheet per n plus a master index.
 //
@@ -80,10 +80,10 @@ public static class GalleryCommand
                 string dir = Path.Combine(outRoot, $"n{n}", $"l{l}", $"m{m}");
                 double extent = asset.FramingRadius(n);
 
-                CommonParams Common(bool real, int colorMode, double gamma = 0.45) => new()
+                CommonParams Common(bool real, int colorMode) => new()
                 {
                     N = n, L = l, M = m, RealMode = real, ColorMode = colorMode,
-                    Width = render, Height = render, Gamma = gamma,
+                    Width = render, Height = render, Gamma = 0.71,
                 };
 
                 // ---- 2D slices --------------------------------------------------
@@ -135,12 +135,11 @@ public static class GalleryCommand
                               double distFactor, int integrator, bool halfCut)
                 {
                     var cam = OrbitCam(az, el, distFactor * extent);
-                    // EA images use the user-tuned display gamma (2026-07-19);
-                    // the matching transfer-function values (density 5, opacity
-                    // 2.15, emission 5) are the VolumeParams defaults.
+                    // EA transfer (density/opacity/emission) rides on the
+                    // VolumeParams defaults — the user-tuned values.
                     return volumes.Render(new VolumeParams
                     {
-                        Common = Common(real, color, integrator == 1 ? 0.67 : 0.45),
+                        Common = Common(real, color),
                         CamPos = cam.pos, CamRight = cam.right,
                         CamUp = cam.up, CamFwd = cam.fwd,
                         Integrator = integrator, Steps = steps,
@@ -150,26 +149,28 @@ public static class GalleryCommand
                     });
                 }
 
+                // MIP reads well only through the brightness ramp (user,
+                // 2026-07-19): the max-|ψ|² sample carries no depth context,
+                // so signed/phase hues at it look arbitrary. Those color modes
+                // ride the EA integrator instead — signed at all three angles.
                 foreach (var (name, az, el, dist) in Views)
                 {
                     Save(Path.Combine(dir, $"3d_mip_real_{name}.png"),
                          Volume(true, 0, az, el, dist, 0, false));
-                    Save(Path.Combine(dir, $"3d_mip_signed_{name}.png"),
-                         Volume(true, 1, az, el, dist, 0, false));
+                    Save(Path.Combine(dir, $"3d_ea_signed_{name}.png"),
+                         Volume(true, 1, az, el, dist, 1, false));
                 }
                 var (cAz, cEl, cDist) = (Views[0].az, Views[0].el, Views[0].dist);
                 Save(Path.Combine(dir, "3d_ea_real_q34.png"),
                      Volume(true, 0, cAz, cEl, cDist, 1, false));
-                Save(Path.Combine(dir, "3d_ea_signed_q34.png"),
-                     Volume(true, 1, cAz, cEl, cDist, 1, false));
                 Save(Path.Combine(dir, "3d_ea_real_cut.png"),
                      Volume(true, 0, cAz, cEl, cDist, 1, true));
                 Save(Path.Combine(dir, "3d_ea_signed_cut.png"),
                      Volume(true, 1, cAz, cEl, cDist, 1, true));
-                Save(Path.Combine(dir, "3d_mip_complex_q34.png"),
-                     Volume(false, 2, cAz, cEl, cDist, 0, false));
+                Save(Path.Combine(dir, "3d_ea_complex_q34.png"),
+                     Volume(false, 2, cAz, cEl, cDist, 1, false));
 
-                images += (l - m) % 2 == 0 ? 15 : 14;
+                images += (l - m) % 2 == 0 ? 14 : 13;
             }
 
             if (only == null)
@@ -230,10 +231,9 @@ public static class GalleryCommand
     [
         "2d_real_xz", "2d_real_xy", "2d_signed_xz", "2d_complex_phase",
         "3d_mip_real_q34", "3d_mip_real_side", "3d_mip_real_top",
-        "3d_mip_signed_q34", "3d_mip_signed_side", "3d_mip_signed_top",
-        "3d_ea_real_q34", "3d_ea_signed_q34",
-        "3d_ea_real_cut", "3d_ea_signed_cut",
-        "3d_mip_complex_q34",
+        "3d_ea_real_q34", "3d_ea_real_cut",
+        "3d_ea_signed_q34", "3d_ea_signed_side", "3d_ea_signed_top",
+        "3d_ea_signed_cut", "3d_ea_complex_q34",
     ];
 
     private static void WriteContactSheet(string outRoot, int n)

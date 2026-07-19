@@ -30,7 +30,7 @@ using Colors: RGB, N0f8
 (color math in Float64; ψ pipeline strictly Float32, matching the GPU)."
 function render_slice(asset, palettes, n, l, m, real_mode, color_mode,
                       origin, axisU, axisV, W, H;
-                      gamma = 0.45, value_mode = 0)
+                      gamma = 0.71, value_mode = 0)  # default mirrors the hosts'
     rt = asset.radial[(n, l)]
     at = asset.angular[(l, abs(m))]
     stats = asset.stats[(n, l, abs(m), real_mode ? :real : :complex)]

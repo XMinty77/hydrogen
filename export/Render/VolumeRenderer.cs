@@ -36,7 +36,7 @@ public sealed record VolumeParams
     /// <summary>Opacity curve exponent (see uOpacityPow in volume.frag).</summary>
     public double OpacityPow { get; init; } = 2.15;
     /// <summary>Emission multiplier; dense cores bloom toward white.</summary>
-    public double EmissionGain { get; init; } = 5.0;
+    public double EmissionGain { get; init; } = 6.7;
     /// <summary>Up to two world-space half-spaces (nx, ny, nz, d); the kept
     /// side satisfies n·p + d ≥ 0. For camera-locked cutaways the host
     /// recomputes these from the camera each frame.</summary>

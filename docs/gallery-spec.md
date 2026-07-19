@@ -22,13 +22,12 @@ For each state |n, l, m⟩ (n ≤ 10):
 
 | # | Image | Integrator | View | Rationale |
 |---|-------|-----------|------|-----------|
-| 5–7 | real, ramp | MIP | ¾ (az 35°, el 25°), side (az 0°, el 8°), top (az 35°, el 78°) | The signature glowing-cloud look, three angles. |
-| 8–10 | real, **signed** | MIP | same three angles | Lobe signs in 3D (user tweak 2026-07-18: signed versions of all real 3D renders). |
+| 5–7 | real, ramp | MIP | ¾ (az 35°, el 25°), side (az 0°, el 8°), top (az 35°, el 78°) | The signature glowing-cloud look, three angles. MIP is **ramp-only** (user, 2026-07-19): the max-density sample carries no depth context, so signed/phase hues at it read as arbitrary. |
+| 8–10 | real, **signed** | **EA** | same three angles | Lobe signs in 3D as translucent glowing gas (moved off MIP, iteration 3). |
 | 11 | real, ramp | **EA** | ¾ | The translucent glowing-gas render with depth/occlusion. |
-| 12 | real, signed | EA | ¾ | Signed glowing-gas. |
-| 13 | real, ramp | **EA + half-cut** (clip plane removes y > 0) | ¾ | The checkbook's "3D crossection": interior structure through a cutaway, volumetrically. |
-| 14 | real, signed | EA + half-cut | ¾ | Signed cutaway. |
-| 15 | complex, phase | MIP (phase-at-max) | ¾ | The phase torus/cloud. (EA is not used for complex: front/back phase cancellation desaturates it — documented in volume.frag.) |
+| 12 | real, ramp | **EA + half-cut** (clip plane removes y > 0) | ¾ | The checkbook's "3D crossection": interior structure through a cutaway, volumetrically. |
+| 13 | real, signed | EA + half-cut | ¾ | Signed cutaway. |
+| 14 | complex, phase | **EA** | ¾ | The phase torus/cloud as glowing gas. At the tuned low density the front/back phase-cancellation desaturation that once made MIP the complex default is minor (verified on (5,3,3), 2026-07-19). |
 
 ### Not included per-state (deliberate)
 
@@ -36,7 +35,8 @@ For each state |n, l, m⟩ (n ≤ 10):
   not a distinct visual — available via CLI/web, redundant ×2 in the gallery.
 - **Diagonal/rotated cut planes**: infinite family; the web demo makes them
   interactive. A few hand-picked ones can join a curated "showcase" set later.
-- **Complex EA**: see #10.
+- **Complex MIP**: MIP is ramp-only since iteration 3; the phase-at-max
+  variant remains available in the CLI and web demo for exploration.
 
 ## m coverage — decision needed
 
@@ -49,8 +49,9 @@ states). But the −m images are exact transforms of the +m ones:
   #1/#3 (xz) differ only trivially, #2/#4 are in-plane rotations.
 
 **Decision (user, 2026-07-18): Option A** — m ∈ {0 … l}: 220 states,
-15 images each (14 when the xy slice is parity-skipped), ~3,150 images.
-The −m transforms are documented in the gallery index.
+14 images each (13 when the xy slice is parity-skipped; counts as of
+iteration 3), ~2,985 images. The −m transforms are documented in the
+gallery index.
 
 ## Mechanics
 
@@ -64,6 +65,20 @@ The −m transforms are documented in the gallery index.
   → re-runs are byte-identical; the draft→final rerun changes resolution only.
 - **Draft pass**: 1024² (user-approved), then composition review, then the
   final-resolution run (resolution decided after the draft looks right).
+
+## Iteration 3 (user, 2026-07-19 — second web-demo round)
+
+- **Defaults everywhere: emission gain 6.7, display gamma 0.71** — for every
+  image type, replacing iteration 2's EA-only 0.67 / MIP-and-slice 0.45
+  split. Web ≤0.5 LSB parity re-verified at the new gamma.
+- **MIP is ramp-only**: the signed-MIP trio and the complex-MIP image are
+  dropped; signed now gets EA at all three angles and the complex phase
+  image is EA. Per-state set: 14 images (13 with the parity skip).
+- **2D slice aspect bug fixed**: the web demo's fullscreen (non-square)
+  canvas stretched slices horizontally — the U axis now carries the
+  width/height factor, so pixels are square and the vertical extent stays
+  the framing (the volume renderer's vertical-FOV convention). The CLI
+  applies the same convention for non-square `--size`.
 
 ## Iteration 2 (user, 2026-07-19 — via the web demo)
 

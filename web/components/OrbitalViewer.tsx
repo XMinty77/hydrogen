@@ -56,7 +56,7 @@ function defaultParams() {
     mode: "real" as "real" | "complex",
     color: "ramp" as "ramp" | "signed" | "phase",
     value: "density" as "density" | "amplitude",
-    gamma: 0.45,
+    gamma: 0.71,
     dither: true,
     ramp: "accretion_tuned",
     rampSpace: "oklab" as "oklab" | "srgb",
@@ -83,7 +83,7 @@ function defaultParams() {
     steps: 400,
     density: 5,
     opacityPow: 2.15,
-    emission: 5,
+    emission: 6.7,
     fov: 40,
     clips: [
       { enabled: false, axis: "forward", offset: 0, flip: false, camLock: false },
@@ -471,7 +471,14 @@ export default function OrbitalViewer() {
         };
 
         if (params.view === "slice") {
-          renderer.renderSlice({ common, ...slicePlaneVectors(params, framing()) });
+          // Aspect correction: uv spans the full canvas on both axes, so equal
+          // half-extents would stretch the field on a non-square canvas. The
+          // U axis gets the width/height factor — pixels become square, the
+          // vertical extent stays the framing (the volume renderer's
+          // vertical-FOV convention), and wider windows just see more world.
+          const sp = slicePlaneVectors(params, framing());
+          const aspect = canvas.width / canvas.height;
+          renderer.renderSlice({ common, ...sp, axisU: scale(sp.axisU, aspect) });
         } else {
           const pose = rig.pose(framing());
           renderer.renderVolume({
