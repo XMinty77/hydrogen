@@ -1,4 +1,9 @@
-assets/
+# Baked by lab/scripts/bake.jl. The two files the web build needs at runtime
+# are committed (2.7 MB) so CI can build without a Julia toolchain; anything
+# else that lands here (larger experiments) stays ignored.
+assets/*
+!assets/orbitals.bin
+!assets/palettes.json
 gallery/
 *.user
 bin/

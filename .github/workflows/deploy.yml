@@ -1,0 +1,60 @@
+# =============================================================================
+# Build the web/ demo as a static site and deploy it to GitHub Pages.
+#
+# The site is a project page served under a sub-path
+# (xminty77.github.io/hydrogen), so the build exports PAGES_BASE_PATH=/hydrogen
+# (see web/next.config.mjs). The prebuild step (scripts/sync-assets.mjs, run by
+# `npm run build`) copies ../assets/{orbitals.bin,palettes.json} and
+# ../shaders/* into public/generated/ — both are committed, so no Julia/C#
+# toolchain is needed in CI.
+# =============================================================================
+name: Deploy web demo to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Least privilege: read the repo, write the Pages deployment, mint the OIDC
+# token deploy-pages uses.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; don't cancel an in-flight one (it could leave Pages
+# half-updated).
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run build
+        env:
+          PAGES_BASE_PATH: /hydrogen
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
