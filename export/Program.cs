@@ -32,7 +32,9 @@
 //   --fov F              vertical field of view, degrees (default 40)
 //   --integrator mip|ea                            (default mip)
 //   --steps N            ray samples               (default 600)
-//   --density F          EA extinction scale       (default 300)
+//   --density F          EA extinction scale       (default 5)
+//   --opacity-pow F      EA opacity exponent       (default 2.15)
+//   --emission F         EA emission gain          (default 5)
 //   --clip nx,ny,nz,d    half-space clip plane, repeatable up to twice;
 //                        keeps the side where n·p + d ≥ 0
 // =============================================================================
@@ -200,9 +202,9 @@ else
             var s => throw new ArgumentException($"unknown integrator '{s}'"),
         },
         Steps = int.Parse(Get("steps", "600")),
-        DensityScale = double.Parse(Get("density", "300")),
-        OpacityPow = double.Parse(Get("opacity-pow", "2.2")),
-        EmissionGain = double.Parse(Get("emission", "1.6")),
+        DensityScale = double.Parse(Get("density", "5")),
+        OpacityPow = double.Parse(Get("opacity-pow", "2.15")),
+        EmissionGain = double.Parse(Get("emission", "5")),
         ClipPlanes = clips,
     });
     defaultOut = Path.Combine("gallery", "volumes",

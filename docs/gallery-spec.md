@@ -65,6 +65,17 @@ The −m transforms are documented in the gallery index.
 - **Draft pass**: 1024² (user-approved), then composition review, then the
   final-resolution run (resolution decided after the draft looks right).
 
+## Iteration 2 (user, 2026-07-19 — via the web demo)
+
+- **EA transfer function retuned interactively**: density 5, opacity exponent
+  2.15, emission gain 5, display gamma 0.67 (EA images only; MIP and slices
+  keep 0.45). These are now the `VolumeParams` defaults; the old values
+  (300 / 2.2 / 1.6 / 0.45) are in git history. The web demo's density slider
+  is capped at 50 — beyond that everything reads as fog.
+- **Signed palette**: negative lobes switched from the chroma complement to a
+  hue reflection about the 125° OKLab axis (red→blue, gold→green, shared
+  dark base). Isolated in its own commit for easy revert.
+
 ## Post-draft decisions (user, 2026-07-18)
 
 - **Final resolution pinned at 4096²** unless a desire for higher quality

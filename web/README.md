@@ -29,9 +29,11 @@ reload, nothing else to do.
   elevation, roll, offset along the normal). Drag rotates the plane, wheel
   zooms.
 - **3D volume** — MIP or emission–absorption; steps/density/opacity/emission;
-  two camera-locked clip planes (axis: view forward/right/up + offset + flip).
-  Orbit camera (drag + wheel) or FPS fly camera (click to capture the mouse,
-  WASD + E/Q, Shift = fast, Esc releases).
+  two clip planes (axis: view forward/right/up + offset + flip), world-fixed
+  at the starting camera's axes by default, each optionally locked to the
+  live camera ("lock to camera"). Orbit camera (drag + wheel) or FPS fly
+  camera (click to capture the mouse, WASD + E/Q, Shift = fast, Esc
+  releases).
 
 ## URL parameters
 

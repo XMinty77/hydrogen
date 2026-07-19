@@ -80,10 +80,10 @@ public static class GalleryCommand
                 string dir = Path.Combine(outRoot, $"n{n}", $"l{l}", $"m{m}");
                 double extent = asset.FramingRadius(n);
 
-                CommonParams Common(bool real, int colorMode) => new()
+                CommonParams Common(bool real, int colorMode, double gamma = 0.45) => new()
                 {
                     N = n, L = l, M = m, RealMode = real, ColorMode = colorMode,
-                    Width = render, Height = render,
+                    Width = render, Height = render, Gamma = gamma,
                 };
 
                 // ---- 2D slices --------------------------------------------------
@@ -135,9 +135,12 @@ public static class GalleryCommand
                               double distFactor, int integrator, bool halfCut)
                 {
                     var cam = OrbitCam(az, el, distFactor * extent);
+                    // EA images use the user-tuned display gamma (2026-07-19);
+                    // the matching transfer-function values (density 5, opacity
+                    // 2.15, emission 5) are the VolumeParams defaults.
                     return volumes.Render(new VolumeParams
                     {
-                        Common = Common(real, color),
+                        Common = Common(real, color, integrator == 1 ? 0.67 : 0.45),
                         CamPos = cam.pos, CamRight = cam.right,
                         CamUp = cam.up, CamFwd = cam.fwd,
                         Integrator = integrator, Steps = steps,

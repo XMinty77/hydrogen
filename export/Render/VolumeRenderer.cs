@@ -27,13 +27,16 @@ public sealed record VolumeParams
     /// <summary>Ray samples inside the domain. 600 is clean at 1–2K preview;
     /// push into the thousands for supersampled stills.</summary>
     public int Steps { get; init; } = 600;
+    // EA transfer defaults below are the user-tuned values (2026-07-19, found
+    // interactively in the web demo; previous 300 / 2.2 / 1.6 in git history).
+    // Densities beyond ~50 read as fog — useful only for bulk-structure looks.
     /// <summary>Emission–absorption extinction: optical depth per domain
     /// radius at unit brightness.</summary>
-    public double DensityScale { get; init; } = 300.0;
+    public double DensityScale { get; init; } = 5.0;
     /// <summary>Opacity curve exponent (see uOpacityPow in volume.frag).</summary>
-    public double OpacityPow { get; init; } = 2.2;
+    public double OpacityPow { get; init; } = 2.15;
     /// <summary>Emission multiplier; dense cores bloom toward white.</summary>
-    public double EmissionGain { get; init; } = 1.6;
+    public double EmissionGain { get; init; } = 5.0;
     /// <summary>Up to two world-space half-spaces (nx, ny, nz, d); the kept
     /// side satisfies n·p + d ≥ 0. For camera-locked cutaways the host
     /// recomputes these from the camera each frame.</summary>

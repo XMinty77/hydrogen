@@ -35,11 +35,14 @@ type ClipAxis = "forward" | "right" | "up";
 interface ClipParams {
   enabled: boolean;
   axis: ClipAxis;
-  /** Plane offset from the origin along the (camera-locked) axis, in framing
-   * radii. */
+  /** Plane offset from the origin along the axis, in framing radii. */
   offset: number;
   /** Keep the near side instead of the far side. */
   flip: boolean;
+  /** Follow the live camera (the axis re-orients every frame) instead of
+   * staying fixed at the initial camera's axes (the default — user decision
+   * 2026-07-19: a cut that rides the camera disorients while orbiting). */
+  camLock: boolean;
 }
 
 /** The full UI state. Defaults reproduce the offline CLI's defaults so web
@@ -73,16 +76,18 @@ function defaultParams() {
     sliceOffset: 0,
     sliceZoom: 1,
 
-    // Volume.
+    // Volume. EA defaults are the user-tuned values of 2026-07-19; the
+    // density range is deliberately narrow — beyond ~50 everything is fog
+    // (the offline CLI still accepts anything, for bulk-structure looks).
     integrator: "mip" as "mip" | "ea",
     steps: 400,
-    density: 300,
-    opacityPow: 2.2,
-    emission: 1.6,
+    density: 5,
+    opacityPow: 2.15,
+    emission: 5,
     fov: 40,
     clips: [
-      { enabled: false, axis: "forward", offset: 0, flip: false },
-      { enabled: false, axis: "up", offset: 0, flip: false },
+      { enabled: false, axis: "forward", offset: 0, flip: false, camLock: false },
+      { enabled: false, axis: "up", offset: 0, flip: false, camLock: false },
     ] as [ClipParams, ClipParams],
   };
 }
@@ -134,16 +139,17 @@ function applyUrlOverrides(p: Params, search: string) {
   num("emission", (v) => (p.emission = v));
   num("fov", (v) => (p.fov = v));
 
-  // clip=axis,offset[,flip] — repeatable (first occurrence → clip A, …).
+  // clip=axis,offset[,flip[,camLock]] — repeatable (first → clip A, …).
   q.getAll("clip").forEach((spec, i) => {
     if (i >= 2) return;
-    const [axis, offset, flip] = spec.split(",");
+    const [axis, offset, flip, camLock] = spec.split(",");
     if (axis === "forward" || axis === "right" || axis === "up")
       p.clips[i] = {
         enabled: true,
         axis,
         offset: Number.isFinite(+offset) ? +offset : 0,
         flip: flip === "1",
+        camLock: camLock === "1",
       };
   });
 }
@@ -192,18 +198,21 @@ function slicePlaneVectors(p: Params, framing: number) {
   }
 }
 
-/** Camera-locked clip planes: each active clip keeps the half-space
- * dot(axis, p) ≥ offset·framing (or ≤, when flipped), where axis is a basis
- * vector of the *current* camera pose — so the cut rides with the camera.
- * With the default forward axis this carves a viewer-facing cutaway. */
+/** Clip planes: each active clip keeps the half-space dot(axis, p) ≥
+ * offset·framing (or ≤, when flipped), where axis is a basis vector of a
+ * camera pose — the *initial* camera's by default (a world-fixed cut you can
+ * orbit around to inspect), or the live camera's when camLock is on (the cut
+ * rides with the view, carving a viewer-facing cutaway). */
 function clipPlaneVectors(
   clips: [ClipParams, ClipParams],
-  pose: CameraPose,
+  livePose: CameraPose,
+  basePose: CameraPose,
   framing: number,
 ): [number, number, number, number][] {
   const out: [number, number, number, number][] = [];
   for (const c of clips) {
     if (!c.enabled) continue;
+    const pose = c.camLock ? livePose : basePose;
     const axis = c.axis === "forward" ? pose.fwd : c.axis === "right" ? pose.right : pose.up;
     const s = c.flip ? -1 : 1;
     out.push([s * axis[0], s * axis[1], s * axis[2], -s * c.offset * framing]);
@@ -266,6 +275,10 @@ export default function OrbitalViewer() {
       const rig = new CameraRig();
       if (camOverride?.length === 3 && camOverride.every(Number.isFinite))
         [rig.azDeg, rig.elDeg, rig.dist] = camOverride;
+      // Frozen copy of the starting camera's axes: the reference frame for
+      // non-camLocked clip planes (framing factor is irrelevant — only the
+      // basis directions are used).
+      const basePose = rig.pose(1);
 
       // ----------------------------------------------------------------- GUI
       const gui = new GUI({ title: "hydrogen" });
@@ -320,9 +333,9 @@ export default function OrbitalViewer() {
       const fVolume = gui.addFolder("volume");
       fVolume.add(params, "integrator", ["mip", "ea"]);
       fVolume.add(params, "steps", 64, 1200, 1);
-      fVolume.add(params, "density", 5, 1500, 5);
+      fVolume.add(params, "density", 1, 50, 0.5);
       fVolume.add(params, "opacityPow", 0.5, 4, 0.05);
-      fVolume.add(params, "emission", 0.1, 5, 0.05);
+      fVolume.add(params, "emission", 0.1, 20, 0.05);
       fVolume.add(params, "fov", 20, 90, 1);
 
       const fCamera = gui.addFolder("camera");
@@ -345,6 +358,7 @@ export default function OrbitalViewer() {
         f.add(c, "axis", ["forward", "right", "up"]);
         f.add(c, "offset", -1.2, 1.2, 0.005);
         f.add(c, "flip");
+        f.add(c, "camLock").name("lock to camera");
         return f;
       };
       const fClipA = clipFolder("clip plane A", params.clips[0]);
@@ -472,7 +486,7 @@ export default function OrbitalViewer() {
             densityScale: params.density,
             opacityPow: params.opacityPow,
             emissionGain: params.emission,
-            clipPlanes: clipPlaneVectors(params.clips, pose, framing()),
+            clipPlanes: clipPlaneVectors(params.clips, pose, basePose, framing()),
           });
         }
 
