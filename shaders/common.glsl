@@ -170,13 +170,23 @@ vec3 rampColor(float t) {
     return uRampSpaceSrgb ? clamp(c, 0.0, 1.0) : oklabToSrgb(c);
 }
 
-// Signed variant for real mode: positive lobes take the ramp as-is, negative
-// lobes take its chroma complement (a, b negated = 180° hue rotation at
-// identical lightness — same perceptual weight, unmistakably distinct).
+// Signed variant for real mode: positive lobes take the ramp as-is; negative
+// lobes reflect its hue across the 125° OKLab axis. That axis is chosen so
+// the ramp's dark-purple base (305°) is a fixed point — both signs share one
+// background — while the bright structure maps red→blue and gold→green, the
+// intuitive "cool inverse of hot" pairing (user-tuned 2026-07-19). Lightness
+// is untouched, so perceptual weight stays identical; reflected chroma can
+// exceed the sRGB gamut in the cyan-blue region and relies on the final RGB
+// clamp, exactly as (and measurably less than) the previous complement did.
+// Matrix is [cos 2α, sin 2α; sin 2α, −cos 2α] with 2α = 250°.
+// REVERT to the previous chroma complement (180° rotation) by replacing the
+// reflection with:  lab.yz = -lab.yz;   (mirror lab/scripts/render_reference.jl!)
 vec3 rampColorSigned(float t, float sgn) {
     vec3 lab = uRampSpaceSrgb ? vec3(0.0) : rampStops(t);   // sRGB space: no
     if (uRampSpaceSrgb) return rampColor(t);                // signed variant
-    if (sgn < 0.0) lab.yz = -lab.yz;
+    if (sgn < 0.0)
+        lab.yz = vec2(-0.3420201433 * lab.y - 0.9396926208 * lab.z,
+                      -0.9396926208 * lab.y + 0.3420201433 * lab.z);
     return oklabToSrgb(lab);
 }
 

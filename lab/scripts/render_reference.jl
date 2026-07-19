@@ -111,7 +111,15 @@ function render_slice(asset, palettes, n, l, m, real_mode, color_mode,
                 img[row, col] = oklab_to_srgb(lab...)
             elseif color_mode == 1
                 lab = ramp_lab(bright)
-                lab = ψre < 0 ? (lab[1], -lab[2], -lab[3]) : Tuple(lab)
+                if ψre < 0
+                    # Hue reflection across the 125° OKLab axis — mirror of
+                    # rampColorSigned in common.glsl (see the note there).
+                    c2, s2 = -0.3420201433f0, -0.9396926208f0
+                    lab = (lab[1], c2 * lab[2] + s2 * lab[3],
+                                   s2 * lab[2] - c2 * lab[3])
+                else
+                    lab = Tuple(lab)
+                end
                 img[row, col] = oklab_to_srgb(lab...)
             else
                 img[row, col] = oklab_to_srgb(ramp_lab(bright)...)
