@@ -27,7 +27,8 @@ import {
   statsKey,
   type HorbAsset,
 } from "./horb";
-import type { PaletteSet } from "./palettes";
+import type { PaletteSet, Ramp } from "./palettes";
+import { effectiveQ999, MAX_TERMS, type SuperTerm } from "./superposition";
 import type { Vec3 } from "./vec3";
 
 /** Parameters shared by every render pass — mirror of CommonParams in
@@ -38,9 +39,18 @@ export interface CommonParams {
   l: number;
   m: number;
   realMode: boolean;
+  /** Superposition terms; empty ⇒ the certified single-state path. The
+   * renderer packs each term's tables into one row of a 2D texture pair. */
+  terms: SuperTerm[];
+  /** Flat [re, im, …] coefficients for the terms (time factor folded in by
+   * the host each frame — see superposition.ts). Length 2·terms.length. */
+  termCoefs: Float32Array | null;
+  superNormalize: boolean;
   /** 0 ramp, 1 signed (real mode), 2 phase (complex mode). */
   colorMode: number;
   rampName: string;
+  /** The user-edited ramp, consulted when rampName === "custom". */
+  customRamp: Ramp | null;
   rampSpaceSrgb: boolean;
   gamma: number;
   /** 0: brightness from |ψ|² (density), 1: from |ψ| (amplitude). */
@@ -52,6 +62,10 @@ export interface CommonParams {
   dither: boolean;
   phaseVivid: boolean;
   phaseChromaPow: number;
+  /** Phase-wheel overrides; NaN falls back to palettes.json values. */
+  phaseL: number;
+  phaseC: number;
+  phaseH0Rad: number;
 }
 
 export interface SliceParams {
@@ -189,6 +203,14 @@ export class OrbitalRenderer {
   private readonly angularTex = new Map<string, WebGLTexture>();
   private readonly phaseCmaxTex: WebGLTexture;
 
+  // Superposition row textures (one row per term) + their cache key. Rebuilt
+  // only when the term list's (n,l,m) content changes; coefficients ride in
+  // uniforms and cost nothing to animate.
+  private supRadialTex: WebGLTexture | null = null;
+  private supAngularTex: WebGLTexture | null = null;
+  private supKey = "";
+  private supRMax = new Float32Array(MAX_TERMS);
+
   // Path-tracer accumulation: two RGBA32F targets ping-ponged each pass
   // (read previous sum, write previous + new samples). Rebuilt on resize.
   private accumFbi: [twgl.FramebufferInfo, twgl.FramebufferInfo] | null = null;
@@ -273,6 +295,50 @@ export class OrbitalRenderer {
     return framingRadius(this.asset, n);
   }
 
+  /** Pack each superposition term's radial/angular table into one row of a
+   * 2D R32F texture pair (all rows share a width — fixed by the HORB format).
+   * Cached on the term list's (n,l,m) signature. */
+  private ensureSuperTextures(terms: SuperTerm[]) {
+    const key = terms.map((t) => `${t.n},${t.l},${t.m}`).join(";");
+    if (key === this.supKey) return;
+    const gl = this.gl;
+
+    const rad0 = this.asset.radial.values().next().value!;
+    const ang0 = this.asset.angular.values().next().value!;
+    const radW = rad0.values.length;
+    const angW = ang0.values.length;
+    const radData = new Float32Array(radW * MAX_TERMS);
+    const angData = new Float32Array(angW * MAX_TERMS);
+    this.supRMax.fill(1);
+    terms.forEach((t, k) => {
+      const radial = this.asset.radial.get(radialKey(t.n, t.l));
+      if (!radial) throw new Error(`no radial table for n=${t.n}, l=${t.l}`);
+      const angular = this.asset.angular.get(angularKey(t.l, t.m));
+      if (!angular) throw new Error(`no angular table for l=${t.l}, m=${t.m}`);
+      radData.set(radial.values, k * radW);
+      angData.set(angular.values, k * angW);
+      this.supRMax[k] = radial.rMax;
+    });
+
+    const make = (width: number, src: Float32Array) =>
+      twgl.createTexture(gl, {
+        width,
+        height: MAX_TERMS,
+        internalFormat: gl.R32F,
+        format: gl.RED,
+        type: gl.FLOAT,
+        src,
+        min: gl.NEAREST,
+        mag: gl.NEAREST,
+        wrap: gl.CLAMP_TO_EDGE,
+      });
+    if (this.supRadialTex) gl.deleteTexture(this.supRadialTex);
+    if (this.supAngularTex) gl.deleteTexture(this.supAngularTex);
+    this.supRadialTex = make(radW, radData);
+    this.supAngularTex = make(angW, angData);
+    this.supKey = key;
+  }
+
   /** Everything shared between passes — mirror of UploadCommon. */
   private commonUniforms(p: CommonParams): Record<string, unknown> {
     const radial = this.asset.radial.get(radialKey(p.n, p.l));
@@ -293,7 +359,25 @@ export class OrbitalRenderer {
     const stats = this.asset.stats.get(statsKey(p.n, p.l, p.m, p.realMode));
     if (!stats) throw new Error(`no stats for (${p.n},${p.l},${p.m})`);
 
-    const ramp = this.palettes.ramps[p.rampName];
+    // Superposition: pack term tables, extend the domain to cover every term,
+    // and swap the display normalization for the |c|²-weighted quantile.
+    const superOn = p.terms.length > 0;
+    let rMax = radial.rMax;
+    let q999 = stats.q999;
+    const supM = new Int32Array(MAX_TERMS);
+    const supCoef = new Float32Array(MAX_TERMS * 2);
+    if (superOn) {
+      this.ensureSuperTextures(p.terms);
+      rMax = Math.max(...p.terms.map((t, k) => (supM[k] = t.m, this.supRMax[k])));
+      q999 = effectiveQ999(p.terms, this.asset, p.realMode, p.superNormalize);
+      if (p.termCoefs) supCoef.set(p.termCoefs);
+      else p.terms.forEach((t, k) => (supCoef[2 * k] = t.amp));
+    }
+
+    const ramp =
+      p.rampName === "custom" && p.customRamp
+        ? p.customRamp
+        : this.palettes.ramps[p.rampName];
     if (!ramp) throw new Error(`unknown ramp '${p.rampName}'`);
     const stops = p.rampSpaceSrgb ? ramp.srgb : ramp.oklab;
     const rampColor = new Float32Array(MAX_STOPS * 3);
@@ -305,10 +389,16 @@ export class OrbitalRenderer {
       uRadialTab: radTex,
       uAngularTab: angTex,
       uPhaseCmaxTab: this.phaseCmaxTex,
-      uRMax: radial.rMax,
+      uRMax: rMax,
       uM: p.m,
       uRealMode: p.realMode ? 1 : 0,
-      uQ999: stats.q999,
+      uSupCount: superOn ? p.terms.length : 0,
+      uSupRadialTab: superOn ? this.supRadialTex : radTex,
+      uSupAngularTab: superOn ? this.supAngularTex : angTex,
+      uSupRMax: this.supRMax,
+      uSupM: supM,
+      uSupCoef: supCoef,
+      uQ999: q999,
       uGamma: p.gamma,
       uValueMode: p.valueMode,
       uCompressMode: p.compressMode,
@@ -317,9 +407,9 @@ export class OrbitalRenderer {
       uRampPos: rampPos,
       uRampN: ramp.positions.length,
       uRampSpaceSrgb: p.rampSpaceSrgb ? 1 : 0,
-      uPhaseL: this.palettes.phaseL,
-      uPhaseC: this.palettes.phaseC,
-      uPhaseH0: this.palettes.phaseH0,
+      uPhaseL: Number.isNaN(p.phaseL) ? this.palettes.phaseL : p.phaseL,
+      uPhaseC: Number.isNaN(p.phaseC) ? this.palettes.phaseC : p.phaseC,
+      uPhaseH0: Number.isNaN(p.phaseH0Rad) ? this.palettes.phaseH0 : p.phaseH0Rad,
       uPhaseVivid: p.phaseVivid ? 1 : 0,
       uPhaseChromaPow: p.phaseChromaPow,
       uDitherAmp: p.dither ? 1 / 255 : 0,

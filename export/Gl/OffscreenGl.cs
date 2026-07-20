@@ -119,6 +119,56 @@ public sealed class OffscreenGl : IDisposable
         return tex;
     }
 
+    /// <summary>Upload several equal-width tables as one width×rows R32F
+    /// texture (row k = table k) — the superposition term layout. Same
+    /// NEAREST/manual-interpolation contract as CreateTableTexture.</summary>
+    public unsafe uint CreateRowTableTexture(float[] packed, int width, int rows)
+    {
+        uint tex = Gl.GenTexture();
+        Gl.ActiveTexture(TextureUnit.Texture7);   // scratch unit; see below
+        Gl.BindTexture(TextureTarget.Texture2D, tex);
+        fixed (float* p = packed)
+        {
+            Gl.TexImage2D(TextureTarget.Texture2D, 0, InternalFormat.R32f,
+                          (uint)width, (uint)rows, 0, PixelFormat.Red,
+                          PixelType.Float, p);
+        }
+        Gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter,
+                        (int)TextureMinFilter.Nearest);
+        Gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter,
+                        (int)TextureMagFilter.Nearest);
+        Gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS,
+                        (int)TextureWrapMode.ClampToEdge);
+        Gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT,
+                        (int)TextureWrapMode.ClampToEdge);
+        return tex;
+    }
+
+    /// <summary>Create an RGBA32F framebuffer (HDR accumulation target for the
+    /// progressive path tracer). NEAREST, clamped, no mipmaps.</summary>
+    public unsafe (uint fbo, uint tex) CreateFloatRenderTarget(int width, int height)
+    {
+        uint fbo = Gl.GenFramebuffer();
+        Gl.BindFramebuffer(FramebufferTarget.Framebuffer, fbo);
+        uint tex = Gl.GenTexture();
+        Gl.ActiveTexture(TextureUnit.Texture7);
+        Gl.BindTexture(TextureTarget.Texture2D, tex);
+        Gl.TexImage2D(TextureTarget.Texture2D, 0, InternalFormat.Rgba32f,
+                      (uint)width, (uint)height, 0, PixelFormat.Rgba,
+                      PixelType.Float, null);
+        Gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter,
+                        (int)TextureMinFilter.Nearest);
+        Gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter,
+                        (int)TextureMagFilter.Nearest);
+        Gl.FramebufferTexture2D(FramebufferTarget.Framebuffer,
+                                FramebufferAttachment.ColorAttachment0,
+                                TextureTarget.Texture2D, tex, 0);
+        if (Gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer)
+            != GLEnum.FramebufferComplete)
+            throw new InvalidOperationException("float framebuffer incomplete");
+        return (fbo, tex);
+    }
+
     /// <summary>Create an RGBA8 framebuffer of the given size and bind it.
     /// The target texture is bound on a reserved scratch unit so creating a
     /// render target can never silently replace a sampler binding made by a

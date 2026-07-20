@@ -48,7 +48,7 @@ try {
   await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => r(null))));
 
   mkdirSync(dirname(out), { recursive: true });
-  await page.locator("canvas").screenshot({ path: out });
+  await page.locator("canvas.view").screenshot({ path: out });
   console.log(`wrote ${out}  (${url})`);
 } finally {
   await browser.close();

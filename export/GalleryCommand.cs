@@ -4,9 +4,12 @@
 //
 // Implements docs/gallery-spec.md: for every state |n, l, m⟩ with n ≤ n_max
 // and m ≥ 0 (the −m images are exact transforms; see the spec), renders the
-// 18-image set (17 when the equatorial slice is parity-skipped) into
+// 23-image set (22 when the equatorial slice is parity-skipped) into
 //   gallery/stills/n{n}/l{l}/m{m}/*.png
-// and writes one static HTML contact sheet per n plus a master index.
+// and writes one static HTML contact sheet per n plus a master index. The set
+// is the classic slices + MIP/EA views plus the iteration-6 technique
+// showcase (MIDA, multi-scatter, lit isosurfaces, eikonal, path-traced
+// nebula), all sharing the canonical ¾ camera for side-by-side comparison.
 //
 // Everything runs in one process on one GL context with cached tables —
 // per-image process startup would otherwise dominate the batch. PNG encoding
@@ -50,10 +53,13 @@ public static class GalleryCommand
         int[]? only = opt.TryGetValue("only", out var o)
             ? o.Split(',').Select(int.Parse).ToArray() : null;
 
+        int spp = int.Parse(opt.GetValueOrDefault("spp", "48"));   // path tracer
         int render = size * ss;                    // supersampled render size
         using var ctx = new OffscreenGl(Path.Combine(root, "shaders"));
         var slices = new SliceRenderer(ctx, asset, palettes);
         var volumes = new VolumeRenderer(ctx, asset, palettes);
+        var pathtracer = new PathtraceRenderer(ctx, asset, palettes);
+        var eikonal = new EikonalRenderer(ctx, asset, palettes);
 
         // Bounded PNG-encode queue: the GPU renders ahead while CPU encodes.
         using var encodeSlots = new SemaphoreSlim(Environment.ProcessorCount);
@@ -172,7 +178,50 @@ public static class GalleryCommand
                 Save(Path.Combine(dir, "3d_ea_complex_q34.png"),
                      Volume(false, 2, cAz, cEl, cDist, 1, false));
 
-                images += (l - m) % 2 == 0 ? 18 : 17;
+                // ---- iteration-6 techniques, all at the canonical ¾ camera ------
+                var q34cam = OrbitCam(cAz, cEl, cDist * extent);
+                VolumeParams Vp(bool real, int color, int integrator) => new()
+                {
+                    Common = Common(real, color),
+                    CamPos = q34cam.pos, CamRight = q34cam.right,
+                    CamUp = q34cam.up, CamFwd = q34cam.fwd,
+                    Integrator = integrator, Steps = steps,
+                };
+
+                // MIDA with log compression — the "structure X-ray" look.
+                Save(Path.Combine(dir, "3d_mida_signed_q34.png"),
+                     volumes.Render(Vp(true, 1, 3) with
+                     {
+                         Common = Common(true, 1) with { CompressMode = 1, CompressK = 40 },
+                     }));
+                // Anisotropic ambient multi-scattering (tuned defaults).
+                Save(Path.Combine(dir, "3d_scatter_signed_q34.png"),
+                     volumes.Render(Vp(true, 1, 2)));
+                // Lit isosurfaces: nested shells with the GGX/Fresnel response.
+                Save(Path.Combine(dir, "3d_iso_signed_q34.png"),
+                     volumes.Render(Vp(true, 1, 4) with { ShadeModel = 3 }));
+                // Eikonal refraction (opalescent-gem defaults, studio env).
+                Save(Path.Combine(dir, "3d_eik_real_q34.png"),
+                     eikonal.Render(new EikonalParams
+                     {
+                         Common = Common(true, 0),
+                         CamPos = q34cam.pos, CamRight = q34cam.right,
+                         CamUp = q34cam.up, CamFwd = q34cam.fwd,
+                     }));
+                // Path-traced "nebula" (the iteration-5 recipe) in phase colors.
+                Save(Path.Combine(dir, "3d_pt_phase_q34.png"),
+                     pathtracer.Render(new PathtraceParams
+                     {
+                         Common = Common(false, 2),
+                         CamPos = q34cam.pos, CamRight = q34cam.right,
+                         CamUp = q34cam.up, CamFwd = q34cam.fwd,
+                         Spp = spp, Tonemap = 1,
+                         DensityScale = 12, EmissionGain = 2,
+                         LightGain = 10, HgG = 0.6,
+                         Albedo = 0.95, ScatterTint = 1,
+                     }));
+
+                images += (l - m) % 2 == 0 ? 23 : 22;
             }
 
             if (only == null)
@@ -238,6 +287,8 @@ public static class GalleryCommand
         "3d_ea_signed_q34", "3d_ea_signed_side", "3d_ea_signed_side_tilt",
         "3d_ea_signed_diag_side", "3d_ea_signed_top",
         "3d_ea_signed_cut", "3d_ea_complex_q34",
+        "3d_mida_signed_q34", "3d_scatter_signed_q34", "3d_iso_signed_q34",
+        "3d_eik_real_q34", "3d_pt_phase_q34",
     ];
 
     private static void WriteContactSheet(string outRoot, int n)

@@ -28,9 +28,33 @@ const float SQRT2 = 1.41421356237310;
 // ---------------------------------------------------------------------------
 uniform sampler2D uRadialTab;    // R32F, width × 1: R_nl at √-spaced radii
 uniform sampler2D uAngularTab;   // R32F, width × 1: P̄_lm at θ-uniform angles
-uniform float uRMax;             // radial table extent (a₀); ψ ≡ 0 beyond
+uniform float uRMax;             // radial table extent (a₀); ψ ≡ 0 beyond.
+                                 // Superpositions: max over the terms' extents
+                                 // (the domain ball must cover every term).
 uniform int uM;                  // signed magnetic quantum number
 uniform bool uRealMode;          // real (textbook) vs complex (CS) harmonics
+
+// ---------------------------------------------------------------------------
+// Superposition (iteration 6): ψ = Σₖ cₖ · ψ_{nₖlₖmₖ}, up to MAX_TERMS terms.
+//
+// Each term's radial/angular table occupies one ROW of a 2D texture (all
+// radial tables share one width, likewise angular — fixed by the HORB format),
+// so a term lookup is the same texelFetch+mix as the single-state path, just
+// with a row index. The complex coefficients cₖ carry everything per-frame:
+// user amplitude·e^{iφ₀}, the optional time factor e^{−iEₙt} (folded in on the
+// CPU — time evolution costs the shader nothing), and normalization.
+//
+// uSupCount = 0 selects the certified single-state path below, bit-identical
+// to previous iterations (and what hosts that never set these uniforms get,
+// since GL zero-initializes them).
+// ---------------------------------------------------------------------------
+const int MAX_TERMS = 8;
+uniform int uSupCount;                 // 0: single state; 1..MAX_TERMS: superpose
+uniform sampler2D uSupRadialTab;       // R32F, width × MAX_TERMS: row k = R_{nₖlₖ}
+uniform sampler2D uSupAngularTab;      // R32F, width × MAX_TERMS: row k = P̄_{lₖmₖ}
+uniform float uSupRMax[MAX_TERMS];     // per-term radial extent (ψₖ ≡ 0 beyond)
+uniform int   uSupM[MAX_TERMS];        // per-term signed m
+uniform vec2  uSupCoef[MAX_TERMS];     // per-term complex coefficient (re, im)
 
 // ---------------------------------------------------------------------------
 // Display mapping (values from the asset's per-state stats + user config).
@@ -78,44 +102,71 @@ uniform float uDitherAmp;            // output dither amplitude (1/255 for 8-bit
 // ψ evaluation.
 // ---------------------------------------------------------------------------
 
-// Linear interpolation of a 1×N table at normalized coordinate f ∈ [0,1],
-// via texelFetch + explicit mix (see contract above).
-float lookupTable(sampler2D tab, float f) {
+// Linear interpolation of row `row` of a table texture at normalized
+// coordinate f ∈ [0,1], via texelFetch + explicit mix (see contract above).
+float lookupTableRow(sampler2D tab, int row, float f) {
     int n = textureSize(tab, 0).x;
     float x = clamp(f, 0.0, 1.0) * float(n - 1);
     int i0 = min(int(x), n - 2);
     float t = x - float(i0);
-    return mix(texelFetch(tab, ivec2(i0, 0), 0).r,
-               texelFetch(tab, ivec2(i0 + 1, 0), 0).r, t);
+    return mix(texelFetch(tab, ivec2(i0, row), 0).r,
+               texelFetch(tab, ivec2(i0 + 1, row), 0).r, t);
 }
 
-// ψ at a world position (Bohr radii), as (re, im). Real mode keeps im = 0.
-// This is the Float32 pipeline the validation study certified.
+// Single-row (width × 1) tables — the certified single-state lookup.
+float lookupTable(sampler2D tab, float f) { return lookupTableRow(tab, 0, f); }
+
+// One basis state ψ_{nlm} at (r-dependent lookups already done): the azimuthal
+// factor applied per mode. Shared by the single-state and superposition paths
+// so their per-term arithmetic is literally the same code.
+//   real mode:    ψ = R·P̄·{1, √2(−1)^m cos(mφ), √2(−1)^m sin(|m|φ)},  im = 0
+//   complex mode: ψ = (−1)^m-adjusted R·P̄·e^{imφ}  (Y_{l,−m} = (−1)^m Y*_{l,m})
+vec2 basisPsi(float R, float P, int m, float phi) {
+    int am = m < 0 ? -m : m;
+    // (−1)^|m|: cancels the Condon–Shortley phase in real mode (textbook lobe
+    // signs); implements Y_{l,−m} = (−1)^m conj(Y_{l,m}) in complex mode.
+    float flip = (am % 2 == 1) ? -1.0 : 1.0;
+    if (uRealMode) {
+        float azim = m == 0 ? 1.0
+                   : m > 0  ? SQRT2 * flip * cos(float(am) * phi)
+                            : SQRT2 * flip * sin(float(am) * phi);
+        return vec2(R * P * azim, 0.0);
+    } else {
+        float sgn = m < 0 ? flip : 1.0;
+        float ang = float(m) * phi;
+        return sgn * R * P * vec2(cos(ang), sin(ang));
+    }
+}
+
+// ψ at a world position (Bohr radii), as (re, im). Real mode keeps im = 0
+// (until a complex coefficient — e.g. time evolution — rotates it).
+// The uSupCount == 0 path is the Float32 pipeline the validation study
+// certified, bit-identical to previous iterations.
 vec2 evalPsi(vec3 p) {
     float rc = length(p.xy);              // cylindrical radius
     float r = length(vec2(rc, p.z));
     if (r > uRMax) return vec2(0.0);
 
-    float R = lookupTable(uRadialTab, sqrt(r / uRMax));
     float theta = atan(rc, p.z);          // polar angle ∈ [0, π], well-conditioned
-    float P = lookupTable(uAngularTab, theta / PI);
     float phi = atan(p.y, p.x);           // azimuth ∈ (−π, π]
 
-    int am = uM < 0 ? -uM : uM;
-    // (−1)^|m|: cancels the Condon–Shortley phase in real mode (textbook lobe
-    // signs); implements Y_{l,−m} = (−1)^m conj(Y_{l,m}) in complex mode.
-    float flip = (am % 2 == 1) ? -1.0 : 1.0;
-
-    if (uRealMode) {
-        float azim = uM == 0 ? 1.0
-                   : uM > 0  ? SQRT2 * flip * cos(float(am) * phi)
-                             : SQRT2 * flip * sin(float(am) * phi);
-        return vec2(R * P * azim, 0.0);
-    } else {
-        float sgn = uM < 0 ? flip : 1.0;
-        float ang = float(uM) * phi;
-        return sgn * R * P * vec2(cos(ang), sin(ang));
+    if (uSupCount > 0) {
+        vec2 acc = vec2(0.0);
+        for (int k = 0; k < uSupCount; k++) {
+            if (r > uSupRMax[k]) continue;   // this term's tables end earlier
+            float R = lookupTableRow(uSupRadialTab, k, sqrt(r / uSupRMax[k]));
+            float P = lookupTableRow(uSupAngularTab, k, theta / PI);
+            vec2 t = basisPsi(R, P, uSupM[k], phi);
+            vec2 c = uSupCoef[k];
+            acc += vec2(c.x * t.x - c.y * t.y,   // complex c·ψ
+                        c.x * t.y + c.y * t.x);
+        }
+        return acc;
     }
+
+    float R = lookupTable(uRadialTab, sqrt(r / uRMax));
+    float P = lookupTable(uAngularTab, theta / PI);
+    return basisPsi(R, P, uM, phi);
 }
 
 // ---------------------------------------------------------------------------
