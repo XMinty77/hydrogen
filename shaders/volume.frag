@@ -194,9 +194,7 @@ float refineHit(vec3 ro, vec3 rd, float ta, float tb, float level) {
 // specular highlight. It desaturates toward a washed mid-ramp under strong
 // light, but the glassy shell look it gives on some states is worth keeping —
 // it is exposed as the separate "isolegacy" technique.
-// `coverage` (∈[0,1]) scales the composited opacity — 1 for a solid crossing,
-// < 1 for the feathered grazing sliver at a silhouette (analytic edge AA).
-void shadeIsoHit(vec3 p, vec3 rd, float level, float jitter, float coverage,
+void shadeIsoHit(vec3 p, vec3 rd, float level, float jitter,
                  inout vec3 accum, inout float transmit) {
     vec2 psi = evalPsi(p);
 
@@ -232,9 +230,8 @@ void shadeIsoHit(vec3 p, vec3 rd, float level, float jitter, float coverage,
             c += uLightGain * sh * shadeSurface(N, V, uLightDir, vec3(0.0));
     }
 
-    float a = uIsoAlpha * coverage;
-    accum += transmit * a * c;
-    transmit *= 1.0 - a;
+    accum += transmit * uIsoAlpha * c;
+    transmit *= 1.0 - uIsoAlpha;
 }
 
 // ---------------------------------------------------------------------------
@@ -270,23 +267,18 @@ void main() {
             // ---- Emissive isosurfaces. --------------------------------------
             // Detect all level crossings per step, refine each by bisection
             // (exact surface position, grid-independent), and shade them in ray
-            // order. The scan is deterministic (no jitter): a jittered grid
-            // turns the silhouette — where a shell's two grazing crossings merge
-            // and vanish — into per-pixel stipple that supersampling cannot
-            // average into a clean edge. A fixed grid instead leaves a coherent
-            // edge that SSAA smooths, and the analytic coverage feather below
-            // softens the last grazing sliver the grid would otherwise terrace.
+            // order. The scan is deterministic: a jittered grid turned the
+            // silhouette into per-pixel stipple, and an analytic peak-brightness
+            // feather (tried earlier) banded the rims into diagonal moiré on
+            // overlapping transparent shells — both worse than the plain edge,
+            // which supersampling (render scale > 1) resolves cleanly instead.
             vec3 accum = vec3(0.0);
             float transmit = 1.0;
             float tPrev = t0;
             float fPrev = fieldBright(uCamPos + tPrev * dir);
-            float peakB = fPrev;                   // brightest sample on the ray
-            vec3  peakP = uCamPos + tPrev * dir;    // …and where — for edge AA
             for (int i = 1; i <= uSteps; i++) {
                 float t = t0 + float(i) * dt;
-                vec3 p = uCamPos + t * dir;
-                float f = fieldBright(p);
-                if (f > peakB) { peakB = f; peakP = p; }
+                float f = fieldBright(uCamPos + t * dir);
 
                 // Gather crossings of every active level inside this step,
                 // sorted by their linear-interpolation position.
@@ -310,27 +302,12 @@ void main() {
                 }
                 for (int j = 0; j < nHits; j++) {
                     float th = refineHit(uCamPos, dir, tPrev, t, hitL[j]);
-                    shadeIsoHit(uCamPos + th * dir, dir, hitL[j], jitter, 1.0,
+                    shadeIsoHit(uCamPos + th * dir, dir, hitL[j], jitter,
                                 accum, transmit);
                 }
                 if (transmit < 0.004) break;
                 tPrev = t;
                 fPrev = f;
-            }
-            // Analytic silhouette AA. The outer boundary is the outermost
-            // (dimmest) shell; a ray reaches it iff its peak brightness clears
-            // that level. Right at the limb the two grazing crossings merge and
-            // vanish between samples, so detection stops abruptly and the edge
-            // terraces at the marching resolution. Feather it: rays whose peak
-            // falls just short of the outer level still deposit a fractional
-            // sliver of that shell (shaded at the closest-approach point), so
-            // the silhouette fades over a thin brightness window instead of
-            // snapping off — smooth without brute-force step counts.
-            float outerLevel = uIsoLevel * pow(uIsoSpacing, float(uIsoCount - 1));
-            float w = max(outerLevel * 0.2, 1e-4);
-            if (transmit > 0.004 && peakB < outerLevel && peakB > outerLevel - w) {
-                float cov = smoothstep(outerLevel - w, outerLevel, peakB);
-                shadeIsoHit(peakP, dir, outerLevel, jitter, cov, accum, transmit);
             }
             color = displayTransform(accum + transmit * bgLinear);
 
