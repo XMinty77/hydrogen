@@ -96,7 +96,11 @@ export function defaultParams() {
      * link reproduces the exact frame). */
     simTime: 0,
 
-    color: "signed" as ColorName,
+    // Color follows the mode by default (ramp for real, phase for complex),
+    // mirroring the CLI (export/Program.cs). applyUrlOverrides re-derives this
+    // from the resolved mode, so a bare ?mode=real still lands on ramp; after
+    // load the two controls are fully independent (mode changes never touch it).
+    color: "phase" as ColorName,
     value: "density" as "density" | "amplitude",
     gamma: 0.71,
     /** Extra range compression before gamma (esp. for MIDA): see common.glsl. */
@@ -357,6 +361,11 @@ export function applyUrlOverrides(p: Params, search: string, nMax: number) {
   str("mode", ["real", "complex"], (v) => {
     p.mode = v;
   });
+  // Default the color to the resolved mode (ramp for real, phase for complex —
+  // matching export/Program.cs) BEFORE applying an explicit ?color, so a link
+  // that names only the mode reproduces the CLI's picture rather than inheriting
+  // a stale default. An explicit ?color always wins.
+  p.color = p.mode === "real" ? "ramp" : "phase";
   str("color", COLOR_NAMES, (v) => (p.color = v));
   str("value", ["density", "amplitude"], (v) => (p.value = v));
   str("compress", ["off", "log", "asinh"], (v) => (p.compress = v));

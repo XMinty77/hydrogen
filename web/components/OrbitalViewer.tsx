@@ -201,10 +201,14 @@ export default function OrbitalViewer() {
       clampState();
       fState
         .add(params, "mode", ["real", "complex"])
-        .onChange((v: string) => {
-          // Keep the conventional pairing; the color control stays free after.
-          params.color = v === "real" ? "ramp" : "phase";
-          gui.controllersRecursive().forEach((c) => c.updateDisplay());
+        .listen() // every other state control listens; without this the mode
+        // dropdown could show a stale value after a preset set it, reading as
+        // the render being "stuck" in the other basis.
+        .onChange(() => {
+          // Mode (harmonic basis) and color are independent: switching basis
+          // must not overwrite the user's chosen color — they are often
+          // comparing one coloring across bases. Only the term editor, whose
+          // rows carry basis-specific labels, needs a re-render.
           if (termsPanel.visible) termsPanel.render();
         });
       fState
