@@ -18,7 +18,8 @@
 //
 // All angles are canonical: azimuths wrap to (−180°, 180°], elevations clamp
 // to ±89° (so the world-up reference never degenerates), distances clamp to
-// [1.05, 12] framing radii.
+// [0.15, 12] framing radii — the low bound lets you dolly right into the core
+// (domainSegment handles a camera inside the domain ball).
 //
 // The rig only produces a position + orthonormal basis each frame; projection
 // (FOV/aspect) lives in the volume shader's uniforms.
@@ -35,7 +36,7 @@ export interface CameraPose {
 }
 
 const DEG = Math.PI / 180;
-const MIN_DIST = 1.05;
+const MIN_DIST = 0.15;
 const MAX_DIST = 12;
 
 /** Orthonormal look-along basis with world-up +z (elevation is clamped below

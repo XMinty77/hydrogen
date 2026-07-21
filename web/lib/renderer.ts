@@ -59,9 +59,14 @@ export interface CommonParams {
   compressMode: number;
   /** Compression strength k (only read when compressMode > 0). */
   compressK: number;
+  /** Extra-range white point (multiples of q999) that maps to full brightness;
+   * paired with compressMode to reveal the saturated lobe cores. 1 = off. */
+  compressWhite: number;
   dither: boolean;
   phaseVivid: boolean;
   phaseChromaPow: number;
+  /** okphase only: reflect the hue on the negative-real half (signed pairing). */
+  okPhaseSigned: boolean;
   /** Phase-wheel overrides; NaN falls back to palettes.json values. */
   phaseL: number;
   phaseC: number;
@@ -121,6 +126,8 @@ export interface VolumeParams {
   shade: ShadeParams;
   /** 0 MIP, 1 EA, 2 ambient multi-scatter, 3 MIDA, 4 isosurfaces. */
   integrator: number;
+  /** Isosurfaces only: use the original (pre-palette-mapped) shell shading. */
+  isoLegacy: boolean;
   steps: number;
   densityScale: number;
   opacityPow: number;
@@ -144,6 +151,7 @@ export interface VolumeParams {
   isoAlpha: number;
   isoEmission: number;
   isoRim: number;
+  isoAmbient: number;
 }
 
 export interface PathtraceParams {
@@ -231,6 +239,7 @@ export class OrbitalRenderer {
     private readonly pathtracePi: twgl.ProgramInfo,
     private readonly eikonalPi: twgl.ProgramInfo,
     private readonly displayPi: twgl.ProgramInfo,
+    private readonly axesPi: twgl.ProgramInfo,
   ) {
     this.phaseCmaxTex = this.createTableTexture(palettes.phaseCmax);
     this.floatRenderable = gl.getExtension("EXT_color_buffer_float") !== null;
@@ -252,11 +261,15 @@ export class OrbitalRenderer {
       "pathtrace.frag",
       "eikonal.frag",
       "display.frag",
+      "axes.frag",
     ];
-    const [vert, prelude, common, slice, volume, pathtrace, eikonal, display] =
+    const [vert, prelude, common, slice, volume, pathtrace, eikonal, display, axes] =
       await Promise.all(files.map((f) => fetchText(`${shaderBase}/${f}`)));
-    const compile = (viewFrag: string) => {
-      const pi = twgl.createProgramInfo(gl, [vert, prelude + common + viewFrag]);
+    // View shaders share prelude + common; the axes overlay needs neither the
+    // ψ machinery nor common's uniforms, so it compiles against prelude alone.
+    const compile = (viewFrag: string, withCommon = true) => {
+      const src = withCommon ? prelude + common + viewFrag : prelude + viewFrag;
+      const pi = twgl.createProgramInfo(gl, [vert, src]);
       if (!pi) throw new Error("shader compile/link failed (see console)");
       return pi;
     };
@@ -269,6 +282,7 @@ export class OrbitalRenderer {
       compile(pathtrace),
       compile(eikonal),
       compile(display),
+      compile(axes, false),
     );
   }
 
@@ -403,6 +417,7 @@ export class OrbitalRenderer {
       uValueMode: p.valueMode,
       uCompressMode: p.compressMode,
       uCompressK: p.compressK,
+      uCompressWhite: p.compressWhite,
       uRampColor: rampColor,
       uRampPos: rampPos,
       uRampN: ramp.positions.length,
@@ -412,6 +427,7 @@ export class OrbitalRenderer {
       uPhaseH0: Number.isNaN(p.phaseH0Rad) ? this.palettes.phaseH0 : p.phaseH0Rad,
       uPhaseVivid: p.phaseVivid ? 1 : 0,
       uPhaseChromaPow: p.phaseChromaPow,
+      uOkPhaseSigned: p.okPhaseSigned ? 1 : 0,
       uDitherAmp: p.dither ? 1 / 255 : 0,
       uColorMode: p.colorMode,
     };
@@ -485,6 +501,8 @@ export class OrbitalRenderer {
       uIsoAlpha: p.isoAlpha,
       uIsoEmission: p.isoEmission,
       uIsoRim: p.isoRim,
+      uIsoAmbient: p.isoAmbient,
+      uIsoLegacy: p.isoLegacy ? 1 : 0,
       uShadeModel: p.shade.shadeModel,
       uShadeDiffuse: p.shade.shadeDiffuse,
       uShadeSpec: p.shade.shadeSpec,
@@ -493,6 +511,30 @@ export class OrbitalRenderer {
       uShadeConf: p.shade.shadeConf,
       uGradDelta: p.shade.gradDelta,
     });
+  }
+
+  /** Blend the 3-D orientation axes over the finished frame (call last, after
+   * whichever integrator drew the canvas). Shares the live camera so the arms
+   * track every rotation; `axisLen` is the arm half-length in world a₀. */
+  renderAxes(camera: CameraParams, axisLen: number) {
+    const gl = this.gl;
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    this.draw(this.axesPi, {
+      uCamPos: camera.camPos,
+      uCamRight: camera.camRight,
+      uCamUp: camera.camUp,
+      uCamFwd: camera.camFwd,
+      uTanHalfFov: Math.tan((camera.fovYDeg * Math.PI) / 360),
+      uAspect: w / h,
+      uResolution: [w, h],
+      uAxisLen: axisLen,
+      uAxisThickness: 1.4,
+      uAxisAlpha: 1.0,
+    });
+    gl.disable(gl.BLEND);
   }
 
   renderEikonal(p: EikonalParams) {

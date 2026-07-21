@@ -5,7 +5,15 @@
 // Params object lil-gui does. Styling lives in app/globals.css (.hy-*).
 // =============================================================================
 
-import { oklabToSrgb, srgbToHex, srgbToOklab, type Rgb, hexToSrgb } from "./color";
+import {
+  hexToSrgb,
+  oklabToOklch,
+  oklabToSrgb,
+  oklchToOklab,
+  srgbToHex,
+  srgbToOklab,
+  type Rgb,
+} from "./color";
 import type { Params, RampStop } from "./params";
 import type { Ramp } from "./palettes";
 import {
@@ -470,10 +478,16 @@ export class PalettePanel {
       this.handles.append(h);
     });
 
-    // Stop rows.
+    // Stop rows. Each stop is a card: a top line (sRGB swatch · position ·
+    // delete) plus an OKLCH line (perceptual L / C / h sliders) — editing a
+    // stop in the same cylindrical space the ramp interpolates through, which
+    // is what keeps a hand-tuned palette smooth. The two editors are live-
+    // linked through the stop's hex.
     this.stopList.textContent = "";
     stops.forEach((s, i) => {
+      const card = el("div", "hy-stop-card");
       const row = el("div", "hy-stop-row");
+
       const color = el("input", "hy-color") as HTMLInputElement;
       color.type = "color";
       color.value = s.hex;
@@ -483,7 +497,7 @@ export class PalettePanel {
         this.opts.onChange();
         this.renderBarOnly();
       });
-      color.addEventListener("change", () => this.render());
+      color.addEventListener("change", () => this.render()); // resync LCH sliders
       row.append(color);
 
       const pos = el("input", "hy-slider") as HTMLInputElement;
@@ -492,8 +506,10 @@ export class PalettePanel {
       pos.max = "1";
       pos.step = "0.001";
       pos.value = `${s.pos}`;
+      const posVal = el("span", "hy-slider-val", s.pos.toFixed(3));
       pos.addEventListener("input", () => {
         s.pos = +pos.value;
+        posVal.textContent = s.pos.toFixed(3);
         this.opts.params.ramp = "custom";
         this.opts.onChange();
         this.renderBarOnly();
@@ -504,7 +520,7 @@ export class PalettePanel {
         this.opts.onChange();
       });
       row.append(pos);
-      row.append(el("span", "hy-slider-val", s.pos.toFixed(3)));
+      row.append(posVal);
 
       const del = button("×", "hy-close", () => {
         if (stops.length <= 2) return;
@@ -513,7 +529,46 @@ export class PalettePanel {
       });
       if (stops.length <= 2) del.disabled = true;
       row.append(del);
-      this.stopList.append(row);
+      card.append(row);
+
+      // OKLCH line. lch stays authoritative during a drag (out-of-gamut chroma
+      // is clamped only when written to hex, and re-derived on the next full
+      // render), so dragging feels continuous.
+      const lch = oklabToOklch(srgbToOklab(hexToSrgb(s.hex) ?? [0, 0, 0]));
+      const commit = () => {
+        s.hex = srgbToHex(oklabToSrgb(oklchToOklab(lch)));
+        color.value = s.hex;
+        this.opts.params.ramp = "custom";
+        this.opts.onChange();
+        this.renderBarOnly();
+      };
+      const lchRow = el("div", "hy-lch-row");
+      const slot = (label: string, idx: number, min: number, max: number,
+                    step: number, digits: number) => {
+        const slotEl = el("span", "hy-lch-slot");
+        slotEl.append(el("span", "hy-lch-lab", label));
+        const sl = el("input", "hy-slider") as HTMLInputElement;
+        sl.type = "range";
+        sl.min = `${min}`;
+        sl.max = `${max}`;
+        sl.step = `${step}`;
+        sl.value = `${lch[idx]}`;
+        const out = el("span", "hy-lch-val", lch[idx].toFixed(digits));
+        sl.addEventListener("input", () => {
+          lch[idx] = +sl.value;
+          out.textContent = lch[idx].toFixed(digits);
+          commit();
+        });
+        sl.addEventListener("change", () => this.render());
+        slotEl.append(sl, out);
+        lchRow.append(slotEl);
+      };
+      slot("L", 0, 0, 1, 0.001, 3);
+      slot("C", 1, 0, 0.37, 0.001, 3);
+      slot("H", 2, 0, 360, 1, 0);
+      card.append(lchRow);
+
+      this.stopList.append(card);
     });
   }
 
@@ -569,6 +624,7 @@ const KEYBINDS: [string, string][] = [
   ["P", "save a PNG of the current frame (no UI)"],
   ["U", "copy the current view URL"],
   ["G", "show / hide the control panels"],
+  ["Esc", "return focus to the canvas (re-enable these keys)"],
   ["H  or  ?", "this help"],
 ];
 

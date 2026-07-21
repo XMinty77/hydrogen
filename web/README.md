@@ -25,9 +25,21 @@ reload, nothing else to do.
 
 lil-gui panel (top right), grouped as: **state** (n ≤ 25, all l, m;
 real/complex basis) · **time evolution** · **display** (color/value/gamma/
-compression/tonemap/exposure) · **palette** · **quality** · **slice plane** or
-**volume** (technique + per-technique subfolders) · **camera** · **clip
-planes** · **capture**. Two custom panels open from it:
+compression + **white point**/tonemap/exposure) · **palette** · **quality** ·
+**slice plane** or **volume** (technique + per-technique subfolders) ·
+**camera** · **clip planes** · **capture**. Two custom panels open from it:
+
+The **color** modes are `ramp` (brightness → palette), `signed` (real mode:
+hue-reflected negative lobes), `phase` (complex mode: constant-lightness OKLCH
+hue wheel) and `okphase` — the palette's *own* color hue-rotated in OKLCH by
+arg ψ, so complex orbitals inherit the accretion look while hue still encodes
+phase. Its **okphase: signed hue** toggle additionally reflects the negative-real
+half across the signed mode's 250° OKLab axis, so ψ and −ψ read as complementary
+palette colors (gold ↔ magenta) instead of a bare 180° spin through arbitrary
+hues. The **white point ×q999** slider (paired with the log/asinh compression)
+pulls the saturated lobe cores — whose |ψ|² overshoots the q999 normalization
+many-fold and would otherwise clamp to one flat color — back into the ramp so
+their interior gradient shows.
 
 - **Superposition editor** (`state ▸ superposition editor…`): build
   ψ = Σ cₖ |n,l,m⟩ from up to 8 terms — per-term n/l/m, amplitude, phase —
@@ -36,9 +48,12 @@ planes** · **capture**. Two custom panels open from it:
   showing the slowest beat period. Works in either harmonic basis and in
   every view, slices included.
 - **Palette editor** (`palette ▸ palette editor…`): draggable gradient stops
-  (click the bar to add one), true OKLab/sRGB-interpolated preview, "start
-  from" any built-in ramp, phase-wheel sliders (L/C/hue-zero), copy-URL and
-  copy-JSON export. Edits select the `custom` ramp and persist in the URL.
+  (click the bar to add one), true OKLab/sRGB-interpolated preview, and a
+  per-stop **OKLCH picker** (lightness / chroma / hue sliders alongside the
+  sRGB swatch — editing in the same perceptual space the ramp interpolates
+  through keeps a hand-tuned palette smooth). "Start from" any built-in ramp,
+  phase-wheel sliders (L/C/hue-zero), copy-URL and copy-JSON export. Edits
+  select the `custom` ramp and persist in the URL.
 
 **Time evolution** multiplies each term by e^{−iEₙt} (atomic units; the log
 slider spans the 4 decades between 1s–2p beats and Rydberg orbit periods).
@@ -51,11 +66,19 @@ URL so the exact frame is shareable.
 octaves + Henyey–Greenstein key light + Fibonacci ambient occlusion) ·
 `mida` (Bruckner & Gröller, γ blends EA↔MIDA↔MIP; pairs with the display
 folder's log/asinh compression) · `iso` (nested bisection-refined emissive
-shells, level sweep = "3D slides", optional lit shading) · `pathtrace`
-(progressive delta-tracking Monte Carlo with palette-tinted multiple
-scattering, NEE key light, environments, thin-lens DoF; accumulates while the
-view is still) · `eikonal` (ψ as a gradient-index medium, curved rays,
-spherical environments, dispersion). The **surface shading** subfolder
+shells, level sweep = "3D slides"; **palette-mapped shading** walks the ramp
+with the surface illumination — unlit faces sit at the shell's cool base
+color, the key light lifts lit faces toward the hot end — so one shell shows
+the full accretion gradient with 3-D form) · `isolegacy` (the same shells with
+the original pre-palette-mapped shading — self-glow at the shell brightness plus
+a white specular highlight; desaturates under strong light but keeps a glassier,
+more saturated look on phase/okphase states, kept for completeness) · `pathtrace`
+(progressive
+delta-tracking Monte Carlo with palette-tinted multiple scattering, NEE key
+light, environments, thin-lens DoF; accumulates while the view is still).
+`eikonal` (ψ as a gradient-index medium, curved rays, spherical environments,
+dispersion) is kept in the implementation but hidden from the menu — reach it
+with `?integrator=eikonal`. The **surface shading** subfolder
 (ea/scatter/iso) adds Lambert/Blinn–Phong/GGX responses gated by gradient
 confidence so only shell-like regions light up.
 
@@ -63,10 +86,17 @@ confidence so only shell-like regions light up.
 WASD + E/Q, Shift = fast). Inside fly mode, **C** toggles the center-locked
 variant: the view stays on the nucleus while A/D + E/Q slide you around the
 current sphere and W/S change its radius. Azimuths wrap, elevations clamp —
-no angle ever runs away.
+no angle ever runs away. Dolly distance now reaches down to 0.15 framing radii
+(right into the core). The camera folder's **orientation axes** toggle blends
+analytic 3-D axes (X red, Y green, Z blue) over the frame — a rotation aid
+that tracks the live camera. Its **compact gizmo** sub-toggle shortens the arms
+to a small cluster around the origin/crosshair (a Minecraft-F3-style indicator)
+instead of full arms spanning the domain.
 
 **Keyboard** (press **H** or **?** in the app): Space/R time, C center lock,
 P save PNG (canvas only, no UI), U copy view URL, G hide the panels, H help.
+**Esc** returns focus to the canvas from any GUI field so the global keys work
+again immediately (and, in fly mode, releases the pointer lock as usual).
 
 **Quality**: `renderScale` down to 0.05× for weak GPUs, plus an auto governor
 that drops resolution when frames stall and restores it when there is
@@ -80,6 +110,9 @@ always copyable as a link, e.g.
 
 ```
 ?view=volume&state=4,2,1&mode=complex&camera=35,25,2.6&integrator=iso&shadeModel=ggx
+?view=volume&state=4,2,1&integrator=isolegacy&color=okphase   # legacy shell shading
+?state=4,2,1&color=okphase&okSigned=1&axes=1&axesGizmo=1&integrator=ea
+?state=1,0,0&view=slice&compress=log&compressWhite=10   # reveal the 1s core gradient
 ?terms=1,0,0;2,1,0&mode=real&color=ramp&time=1&timeScale=4
 ?ramp=custom&rampStops=05030f@0,3b1c58@0.35,e0562e@0.65,ffc94e@0.85,fff7e0@1
 ```

@@ -81,7 +81,15 @@ uniform int   uIsoCount;       // number of nested shells (1–6)
 uniform float uIsoSpacing;     // geometric ratio between successive levels
 uniform float uIsoAlpha;       // opacity of each shell
 uniform float uIsoEmission;    // shell self-glow gain (palette-colored)
-uniform float uIsoRim;         // Fresnel-style rim-glow gain
+uniform float uIsoRim;         // Fresnel-style rim-glow gain (pushes hue hotter)
+uniform float uIsoAmbient;     // ramp-walk floor: how far up the palette an
+                               // UNLIT shell face sits (0 = at the shell's own
+                               // level/cool base color, 1 = flat fully-hot). The
+                               // key light lifts lit faces from here toward the
+                               // ramp's hot end — see shadeIsoHit.
+uniform bool  uIsoLegacy;      // true ⇒ the original pre-palette-mapped shading
+                               // (self-glow at max(bri,level) + white BRDF
+                               // highlight), kept as its own technique.
 
 in vec2 vUv;
 out vec4 fragColor;
@@ -169,11 +177,26 @@ float refineHit(vec3 ro, vec3 rd, float ta, float tb, float level) {
 }
 
 // Shade one shell hit and composite it front-to-back into (accum, transmit).
+//
+// Coloring is PALETTE-MAPPED SHADING: rather than adding white light (which
+// desaturates the accretion palette into a washed-out mid-ramp grey — the
+// "ugly iso" the flat previous version produced), the surface illumination
+// walks the ramp. An unlit face sits at uIsoAmbient up from its shell's own
+// `level` (the cool base color); the key light lifts lit faces toward the hot
+// end (gold → white); the Fresnel rim pushes the silhouette hotter still. A
+// single shell therefore shows the full accretion gradient with genuine 3-D
+// form, in the palette's own hues — for phase/okphase modes the same walk
+// drives lightness while hue stays the phase, so complex shells read cleanly
+// too. Optional crisp white speculars ride on top when a BRDF model is active.
+//
+// uIsoLegacy selects the ORIGINAL shading instead: the shell emits its palette
+// color at max(bri, level) plus a rim term and (when a BRDF is on) a white
+// specular highlight. It desaturates toward a washed mid-ramp under strong
+// light, but the glassy shell look it gives on some states is worth keeping —
+// it is exposed as the separate "isolegacy" technique.
 void shadeIsoHit(vec3 p, vec3 rd, float level, float jitter,
                  inout vec3 accum, inout float transmit) {
     vec2 psi = evalPsi(p);
-    float bri = brightnessOf(psi);
-    vec3 emit = emitColorLinear(psi, max(bri, level));
 
     float h = max(uGradDelta, 1e-4) * uRMax;
     vec3 g = fieldGradient(p, h);
@@ -182,14 +205,30 @@ void shadeIsoHit(vec3 p, vec3 rd, float level, float jitter,
     if (dot(N, V) < 0.0) N = -N;           // two-sided shells
     float ndv = max(dot(N, V), 0.0);
 
-    vec3 c = uIsoEmission * emit;                          // self-glow
-    c += uIsoRim * pow(1.0 - ndv, 3.0) * emit;             // rim glow
-    if (uShadeModel > 0) {
-        // Lit shells: BRDF response to the key light, shadowed by the medium
-        // via the same octave sum the scatter integrator uses.
-        float sh = multiScatterShadow(lightOpticalDepth(p, jitter));
-        c += uLightGain * sh * shadeSurface(N, V, uLightDir, emit);
+    vec3 c;
+    if (uIsoLegacy) {
+        float bri = brightnessOf(psi);
+        vec3 emit = emitColorLinear(psi, max(bri, level));
+        c  = uIsoEmission * emit;                          // self-glow
+        c += uIsoRim * pow(1.0 - ndv, 3.0) * emit;         // rim glow
+        if (uShadeModel > 0) {
+            float sh = multiScatterShadow(lightOpticalDepth(p, jitter));
+            c += uLightGain * sh * shadeSurface(N, V, uLightDir, emit);
+        }
+    } else {
+        float ndl = max(dot(N, uLightDir), 0.0);
+        // Self-shadow through the medium only when a shade model is on (the
+        // shadow ray is the expensive part); else the form comes free from N·L.
+        float sh  = uShadeModel > 0 ? multiScatterShadow(lightOpticalDepth(p, jitter)) : 1.0;
+        float rim = uIsoRim * pow(1.0 - ndv, 3.0);
+        float w = clamp(uIsoAmbient + ndl * sh + rim, 0.0, 1.0);
+        float temp = mix(level, 1.0, w);   // ramp position for this pixel
+        vec3 emit = emitColorLinear(psi, temp);
+        c = uIsoEmission * emit;
+        if (uShadeModel >= 2)              // white glints, no desaturating diffuse
+            c += uLightGain * sh * shadeSurface(N, V, uLightDir, vec3(0.0));
     }
+
     accum += transmit * uIsoAlpha * c;
     transmit *= 1.0 - uIsoAlpha;
 }
@@ -221,9 +260,7 @@ void main() {
                 float bri = brightnessOf(psi);
                 if (bri > maxB) { maxB = bri; psiAtMax = psi; }
             }
-            color = uColorMode == 2 ? phaseColor(atan(psiAtMax.y, psiAtMax.x), maxB)
-                  : uColorMode == 1 ? rampColorSigned(maxB, psiAtMax.x)
-                                    : rampColor(maxB);
+            color = colorLDR(psiAtMax, maxB);
 
         } else if (uIntegrator == 4) {
             // ---- Emissive isosurfaces. --------------------------------------
@@ -296,12 +333,8 @@ void main() {
                 aAcc  = beta * aAcc  + (1.0 - beta * aAcc) * alpha;
             }
             color = displayTransform(accum + (1.0 - aAcc) * bgLinear);
-            if (uMidaGamma > 0.0) {
-                vec3 mip = uColorMode == 2 ? phaseColor(atan(psiAtMax.y, psiAtMax.x), maxB)
-                         : uColorMode == 1 ? rampColorSigned(maxB, psiAtMax.x)
-                                           : rampColor(maxB);
-                color = mix(color, mip, uMidaGamma);
-            }
+            if (uMidaGamma > 0.0)
+                color = mix(color, colorLDR(psiAtMax, maxB), uMidaGamma);
 
         } else {
             // ---- EA (1) and ambient multi-scattering (2), front-to-back. ----

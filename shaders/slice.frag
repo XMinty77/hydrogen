@@ -8,10 +8,11 @@
 //
 //   world(uv) = uOrigin + (2·uv.x − 1)·uAxisU + (2·uv.y − 1)·uAxisV
 //
-// Color modes:
+// Color modes (uColorMode; the shared colorLDR in common.glsl decodes them):
 //   0  ramp    — brightness through the palette ramp (the classic look)
-//   1  signed  — real mode only: ramp for ψ > 0, chroma-complement for ψ < 0
+//   1  signed  — real mode only: ramp for ψ > 0, hue-reflected for ψ < 0
 //   2  phase   — complex mode: hue = arg ψ (OKLCH wheel), brightness = |ψ|
+//   3  okphase — the ramp's own color, hue-rotated in OKLCH by arg ψ
 // ============================================================================
 
 uniform vec3 uOrigin;      // plane center, world (a₀)
@@ -27,14 +28,5 @@ void main() {
     vec2 psi = evalPsi(p);
     float bright = brightnessOf(psi);
 
-    vec3 color;
-    if (uColorMode == 2) {
-        color = phaseColor(atan(psi.y, psi.x), bright);
-    } else if (uColorMode == 1) {
-        color = rampColorSigned(bright, psi.x);
-    } else {
-        color = rampColor(bright);
-    }
-
-    fragColor = vec4(dither(color, gl_FragCoord.xy), 1.0);
+    fragColor = vec4(dither(colorLDR(psi, bright), gl_FragCoord.xy), 1.0);
 }

@@ -48,6 +48,21 @@ export function srgbToOklab(srgb: Rgb): Rgb {
   ];
 }
 
+/** OKLab (L, a, b) → OKLCH (L, C, h°): the same color in cylindrical form, the
+ * natural space for a perceptual color picker (lightness / chroma / hue). */
+export function oklabToOklch([L, a, b]: Rgb): Rgb {
+  const C = Math.hypot(a, b);
+  let h = (Math.atan2(b, a) * 180) / Math.PI;
+  if (h < 0) h += 360;
+  return [L, C, h];
+}
+
+/** OKLCH (L, C, h°) → OKLab (L, a, b). */
+export function oklchToOklab([L, C, h]: Rgb): Rgb {
+  const hr = (h * Math.PI) / 180;
+  return [L, C * Math.cos(hr), C * Math.sin(hr)];
+}
+
 /** OKLab → gamma sRGB [0,1]³ (clamped into gamut). */
 export function oklabToSrgb(lab: Rgb): Rgb {
   const l_ = lab[0] + 0.3963377774 * lab[1] + 0.2158037573 * lab[2];

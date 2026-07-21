@@ -73,6 +73,19 @@ uniform int uCompressMode;       // extra range compression applied to the
                                  // (MIDA) or need faint-tail structure
                                  // without the gamma pow's slope blowup at 0.
 uniform float uCompressK;        // compression strength k (≈1 subtle, ≫1 hard)
+uniform float uCompressWhite;    // HDR white point, in multiples of q999: the
+                                 // value that maps to full brightness. The
+                                 // inner cores of the lobes overshoot q999 by
+                                 // large factors (|ψ|² there is many times the
+                                 // 99.9th percentile), so with the default
+                                 // white point they all clamp to 1.0 and
+                                 // collapse to a single ramp color. Raising the
+                                 // white point (best paired with a log/asinh
+                                 // compressMode) maps that HDR core back into
+                                 // the ramp so the interior reveals its
+                                 // gradient. 0 ⇒ 1 (disabled): the value hosts
+                                 // that never set this uniform get, so the
+                                 // certified single-state pipeline is unchanged.
 
 // ---------------------------------------------------------------------------
 // Color (assets/palettes.json → uniforms).
@@ -173,11 +186,19 @@ vec2 evalPsi(vec3 p) {
 // Display mapping: ψ → normalized brightness ∈ [0, 1].
 // ---------------------------------------------------------------------------
 float brightnessOf(vec2 psi) {
-    float d = dot(psi, psi);                      // |ψ|²
-    float v = uValueMode == 0 ? d / uQ999 : sqrt(d / uQ999);
+    float d = dot(psi, psi);                       // |ψ|²
+    float v = uValueMode == 0 ? d / uQ999 : sqrt(d / uQ999);   // ≥ 0, may exceed 1
+    float W = uCompressWhite > 0.0 ? uCompressWhite : 1.0;      // 0 ⇒ disabled
+    // Range compression runs on the raw value BEFORE the clamp, so the core
+    // above q999 (v > 1) is shaped by the curve instead of being discarded by
+    // an early clamp. W sets which multiple of q999 becomes white. All three
+    // forms are exact identities to the previous clamp-then-lift behavior when
+    // W = 1 (the default), so parity is preserved; W > 1 pulls the saturated
+    // interior back into range to expose its gradient.
+    if (uCompressMode == 1)      v = log(1.0 + uCompressK * v) / log(1.0 + uCompressK * W);
+    else if (uCompressMode == 2) v = asinh(uCompressK * v) / asinh(uCompressK * W);
+    else                         v = v / W;
     v = clamp(v, 0.0, 1.0);
-    if (uCompressMode == 1)      v = log(1.0 + uCompressK * v) / log(1.0 + uCompressK);
-    else if (uCompressMode == 2) v = asinh(uCompressK * v) / asinh(uCompressK);
     return pow(v, uGamma);
 }
 
@@ -202,6 +223,20 @@ vec3 linearToSrgb(vec3 c) {
 }
 
 vec3 oklabToSrgb(vec3 lab) { return linearToSrgb(oklabToLinearSrgb(lab)); }
+
+// Forward transform: linear sRGB → OKLab (mirror of lab/src/color.jl and
+// web/lib/color.ts). Used by okphase, which needs the ramp's own OKLCH so it
+// can rotate hue by the wavefunction phase. Inputs are non-negative linear RGB,
+// so the cube-root reduces to a plain pow.
+vec3 linearSrgbToOklab(vec3 c) {
+    float l = 0.4122214708 * c.r + 0.5363325363 * c.g + 0.0514459929 * c.b;
+    float m = 0.2119034982 * c.r + 0.6806995451 * c.g + 0.1073969566 * c.b;
+    float s = 0.0883024619 * c.r + 0.2817188376 * c.g + 0.6299787005 * c.b;
+    vec3 lms = pow(max(vec3(l, m, s), 0.0), vec3(1.0 / 3.0));
+    return vec3(0.2104542553 * lms.x + 0.7936177850 * lms.y - 0.0040720468 * lms.z,
+                1.9779984951 * lms.x - 2.4285922050 * lms.y + 0.4505937099 * lms.z,
+                0.0259040371 * lms.x + 0.7827717662 * lms.y - 0.8086757660 * lms.z);
+}
 
 // Inverse transfer, for compositing gamma-encoded palette colors in linear RGB.
 vec3 srgbToLinear(vec3 c) {
@@ -305,6 +340,35 @@ vec3 phaseColor(float phase, float bright) {
     vec3 lab = vec3(uPhaseL * bright, C * cos(hue), C * sin(hue));
     return oklabToSrgb(lab);
 }
+
+uniform bool uOkPhaseSigned;   // okphase: also apply the signed mode's hue
+                               // reversal on the negative-real half (see below).
+
+// okphase (uColorMode == 3): the RAMP's own color at `bright`, hue-rotated in
+// OKLCH by the wavefunction phase. Complex orbitals thus inherit the palette's
+// lightness + chroma envelope (the accretion look) while their hue encodes
+// arg ψ — a richer phase coloring than the flat-lightness wheel. Lightness and
+// chroma come entirely from the ramp; only uPhaseH0 offsets the hue zero.
+//
+// With uOkPhaseSigned the negative-real half (cos(phase) < 0 — the sign
+// rampColorSigned keys on) additionally reflects a·b across the same 250° OKLab
+// axis the signed mode uses. Every hue is still rotated by the phase; the
+// reflection layers the signed palette's "cool inverse of hot" pairing on top,
+// so ψ and −ψ read as complementary colors rather than a bare 180° spin.
+vec3 okPhaseLab(float phase, float bright) {
+    vec3 base = rampStops(bright);
+    vec3 lab = uRampSpaceSrgb ? linearSrgbToOklab(srgbToLinear(clamp(base, 0.0, 1.0)))
+                              : base;
+    float C = length(lab.yz);
+    float h = atan(lab.z, lab.y) + phase + uPhaseH0;
+    vec3 res = vec3(lab.x, C * cos(h), C * sin(h));
+    if (uOkPhaseSigned && cos(phase) < 0.0)
+        res.yz = vec2(-0.3420201433 * res.y - 0.9396926208 * res.z,
+                      -0.9396926208 * res.y + 0.3420201433 * res.z);
+    return res;
+}
+
+vec3 okPhaseColor(float phase, float bright) { return oklabToSrgb(okPhaseLab(phase, bright)); }
 
 // ---------------------------------------------------------------------------
 // Output dithering: interleaved gradient noise (Jimenez), ±half an output LSB.
@@ -530,11 +594,26 @@ vec3 phaseColorLinear(float phase, float bright) {
     return max(oklabToLinearSrgb(vec3(uPhaseL * bright, C * cos(hue), C * sin(hue))), 0.0);
 }
 
-// The color a medium sample emits/scatters, per the active color mode.
+vec3 okPhaseColorLinear(float phase, float bright) {
+    return max(oklabToLinearSrgb(okPhaseLab(phase, bright)), 0.0);
+}
+
+// The color a medium sample emits/scatters, per the active color mode (linear
+// RGB, for the compositing integrators).
 vec3 emitColorLinear(vec2 psi, float bri) {
+    if (uColorMode == 3) return okPhaseColorLinear(atan(psi.y, psi.x), bri);
     return uColorMode == 2 ? phaseColorLinear(atan(psi.y, psi.x), bri)
          : uColorMode == 1 ? srgbToLinear(rampColorSigned(bri, psi.x))
                            : rampColorLinear(bri);
+}
+
+// The LDR display-sRGB color for the active mode — the non-compositing
+// integrators (MIP, MIDA's MIP blend) and the 2-D slice all share this.
+vec3 colorLDR(vec2 psi, float bri) {
+    if (uColorMode == 3) return okPhaseColor(atan(psi.y, psi.x), bri);
+    if (uColorMode == 2) return phaseColor(atan(psi.y, psi.x), bri);
+    if (uColorMode == 1) return rampColorSigned(bri, psi.x);
+    return rampColor(bri);
 }
 
 // ---------------------------------------------------------------------------

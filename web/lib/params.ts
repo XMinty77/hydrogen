@@ -36,7 +36,7 @@ export interface RampStop {
   hex: string;
 }
 
-export const TECHNIQUES = ["mip", "ea", "scatter", "mida", "iso", "pathtrace", "eikonal"] as const;
+export const TECHNIQUES = ["mip", "ea", "scatter", "mida", "iso", "isolegacy", "pathtrace", "eikonal"] as const;
 export type Technique = (typeof TECHNIQUES)[number];
 
 export const ENVS = ["black", "uniform", "studio", "hue", "checker"] as const;
@@ -45,8 +45,12 @@ export type EnvName = (typeof ENVS)[number];
 export const SHADE_MODELS = ["off", "lambert", "blinn", "ggx"] as const;
 export type ShadeModel = (typeof SHADE_MODELS)[number];
 
-export const COLOR_MODE = { ramp: 0, signed: 1, phase: 2 } as const;
-export const INTEGRATOR = { mip: 0, ea: 1, scatter: 2, mida: 3, iso: 4 } as const;
+export const COLOR_MODE = { ramp: 0, signed: 1, phase: 2, okphase: 3 } as const;
+export type ColorName = keyof typeof COLOR_MODE;
+export const COLOR_NAMES = ["ramp", "signed", "phase", "okphase"] as const;
+// isolegacy shares the isosurface integrator (4); the uIsoLegacy uniform picks
+// the original shell shading (set from the technique name in OrbitalViewer).
+export const INTEGRATOR = { mip: 0, ea: 1, scatter: 2, mida: 3, iso: 4, isolegacy: 4 } as const;
 export const TONEMAP = { gamma: 0, agx: 1 } as const;
 export const COMPRESS = { off: 0, log: 1, asinh: 2 } as const;
 export const ENV_MODE = { black: 0, uniform: 1, studio: 2, hue: 3, checker: 4 } as const;
@@ -92,12 +96,16 @@ export function defaultParams() {
      * link reproduces the exact frame). */
     simTime: 0,
 
-    color: "signed" as "ramp" | "signed" | "phase",
+    color: "signed" as ColorName,
     value: "density" as "density" | "amplitude",
     gamma: 0.71,
     /** Extra range compression before gamma (esp. for MIDA): see common.glsl. */
     compress: "off" as "off" | "log" | "asinh",
     compressK: 20,
+    /** HDR white point in multiples of q999 (1 = off). Raise it — best with a
+     * log/asinh compress — to pull the saturated lobe cores back into the ramp
+     * so their interior gradient shows instead of clamping to one flat color. */
+    compressWhite: 1,
     dither: true,
 
     ramp: "accretion_tuned",
@@ -106,6 +114,9 @@ export function defaultParams() {
     rampStops: DEFAULT_CUSTOM_STOPS.map((s) => ({ ...s })) as RampStop[],
     phaseVivid: true,
     phaseChromaPow: 0.6,
+    /** okphase only: also reflect the hue across the signed mode's 250° OKLab
+     * axis on the negative-real half, so ψ and −ψ read as complementary. */
+    okPhaseSigned: false,
     // Phase-wheel overrides; NaN = "use the palette file's value" (resolved
     // after palettes.json loads — see OrbitalViewer).
     phaseL: NaN,
@@ -139,6 +150,13 @@ export function defaultParams() {
     tonemap: "gamma" as "gamma" | "agx",
     exposure: 0,
     fov: 40,
+    /** Overlay the 3-D orientation axes (X red, Y green, Z blue) — a rotation
+     * aid, blended over the finished frame (volume view only). */
+    axes: false,
+    /** Compact "gizmo" axes: short arms clustered around the origin/crosshair
+     * (Minecraft F3 style) instead of full arms spanning the domain. Only has
+     * an effect while `axes` is on. */
+    axesGizmo: false,
 
     // Key light (scatter, lit isosurfaces, surface shading, path tracer).
     lightAz: -30,
@@ -170,6 +188,9 @@ export function defaultParams() {
     isoAlpha: 0.4,
     isoEmission: 2.5,
     isoRim: 1.5,
+    /** Ramp-walk floor for iso shells: how far up the palette an unlit face
+     * sits (0 = the shell's own cool level, 1 = flat fully-hot). See volume.frag. */
+    isoAmbient: 0.15,
 
     // Local illumination overlay (ea/scatter volumes + isosurfaces).
     shadeModel: "off" as ShadeModel,
@@ -230,6 +251,7 @@ export type NumKey = {
 export const NUM_KEYS: [NumKey, number, boolean?][] = [
   ["gamma", 3],
   ["compressK", 1],
+  ["compressWhite", 2],
   ["phaseChromaPow", 3],
   ["phaseL", 3],
   ["phaseC", 3],
@@ -263,6 +285,7 @@ export const NUM_KEYS: [NumKey, number, boolean?][] = [
   ["isoAlpha", 2],
   ["isoEmission", 2],
   ["isoRim", 2],
+  ["isoAmbient", 2],
   ["shadeDiffuse", 2],
   ["shadeSpec", 2],
   ["shadeRough", 2],
@@ -334,7 +357,7 @@ export function applyUrlOverrides(p: Params, search: string, nMax: number) {
   str("mode", ["real", "complex"], (v) => {
     p.mode = v;
   });
-  str("color", ["ramp", "signed", "phase"], (v) => (p.color = v));
+  str("color", COLOR_NAMES, (v) => (p.color = v));
   str("value", ["density", "amplitude"], (v) => (p.value = v));
   str("compress", ["off", "log", "asinh"], (v) => (p.compress = v));
   if (q.get("ramp")) p.ramp = q.get("ramp")!;
@@ -342,6 +365,9 @@ export function applyUrlOverrides(p: Params, search: string, nMax: number) {
   if (q.get("vivid") === "0") p.phaseVivid = false;
   if (q.get("dither") === "0") p.dither = false;
   if (q.get("autoQuality") === "0") p.autoQuality = false;
+  if (q.get("okSigned") === "1") p.okPhaseSigned = true;
+  if (q.get("axes") === "1") p.axes = true;
+  if (q.get("axesGizmo") === "1") p.axesGizmo = true;
 
   const rampStops = q.get("rampStops");
   if (rampStops) {
@@ -414,6 +440,7 @@ export function buildQuery(
 ): string {
   const d = defaultParams();
   const t = p.technique;
+  const iso = t === "iso" || t === "isolegacy";   // share the isosurface group
   const vol = p.view === "volume";
   const q = new URLSearchParams();
   const r = (v: number, digits = 3) => +v.toFixed(digits);
@@ -429,6 +456,7 @@ export function buildQuery(
   if (p.mode !== d.mode) q.set("mode", p.mode);
   // color is implied by mode (real→ramp, complex→phase) unless changed.
   if (p.color !== (p.mode === "real" ? "ramp" : "phase")) q.set("color", p.color);
+  if (p.color === "okphase" && p.okPhaseSigned) q.set("okSigned", "1");
   if (p.value !== d.value) q.set("value", p.value);
   if (p.compress !== d.compress) q.set("compress", p.compress);
   if (p.ramp !== d.ramp) q.set("ramp", p.ramp);
@@ -442,7 +470,7 @@ export function buildQuery(
   // reads (see the shader headers for ownership).
   const phaseColorActive = p.color === "phase";
   const groups: [NumKey[], boolean][] = [
-    [["gamma", "renderScale"], true],
+    [["gamma", "renderScale", "compressWhite"], true],
     [["phaseChromaPow"], phaseColorActive],
     [["timeScale"], p.timeRun || p.simTime !== 0],
     // simTime is meaningful frozen: written only when time is NOT running
@@ -450,18 +478,18 @@ export function buildQuery(
     [["simTime"], !p.timeRun && p.simTime !== 0],
     [["compressK"], p.compress !== "off"],
     [["steps"], vol && t !== "pathtrace" && t !== "eikonal"],
-    [["density", "opacityPow", "emission"], vol && t !== "mip" && t !== "iso" && t !== "eikonal"],
+    [["density", "opacityPow", "emission"], vol && t !== "mip" && !iso && t !== "eikonal"],
     [["exposure", "fov"], vol],
     [["lightAz", "lightEl", "lightGain", "hgG"],
-      vol && ["ea", "scatter", "iso", "pathtrace"].includes(t)],
+      vol && (iso || ["ea", "scatter", "pathtrace"].includes(t))],
     [["shadowSteps", "shadowDensity", "octaves", "octaveGain", "octaveExt",
       "ambientGain", "ambientDirs", "ambientRadius", "ambientDensity"],
-      vol && (t === "scatter" || t === "iso")],
+      vol && (t === "scatter" || iso)],
     [["midaGamma"], vol && t === "mida"],
-    [["isoLevel", "isoCount", "isoSpacing", "isoAlpha", "isoEmission", "isoRim"],
-      vol && t === "iso"],
+    [["isoLevel", "isoCount", "isoSpacing", "isoAlpha", "isoEmission", "isoRim", "isoAmbient"],
+      vol && iso],
     [["shadeDiffuse", "shadeSpec", "shadeRough", "shadeF0", "shadeConf", "gradDelta"],
-      vol && p.shadeModel !== "off" && ["ea", "scatter", "iso"].includes(t)],
+      vol && p.shadeModel !== "off" && (iso || ["ea", "scatter"].includes(t))],
     [["maxBounces", "albedo", "scatterTint", "sppFrame", "aperture", "focus", "ptEnvGain"],
       vol && t === "pathtrace"],
     [["eikSteps", "iorScale", "eikPow", "eikLogK", "absorb", "eikEmission",
@@ -477,11 +505,15 @@ export function buildQuery(
   }
 
   // Phase-wheel overrides: bespoke defaults (palettes.json, not defaultParams).
+  // Lightness/chroma apply to the phase wheel only; the hue-zero offset also
+  // steers okphase's rotation, so it rides along for that mode too.
   if (phaseColorActive) {
     if (!Number.isNaN(p.phaseL) && r(p.phaseL) !== r(phaseDefaults.L))
       q.set("phaseL", `${r(p.phaseL)}`);
     if (!Number.isNaN(p.phaseC) && r(p.phaseC) !== r(phaseDefaults.C))
       q.set("phaseC", `${r(p.phaseC)}`);
+  }
+  if (phaseColorActive || p.color === "okphase") {
     if (!Number.isNaN(p.phaseH0Deg) && r(p.phaseH0Deg, 1) !== r(phaseDefaults.h0Deg, 1))
       q.set("phaseH0Deg", `${r(p.phaseH0Deg, 1)}`);
   }
@@ -497,8 +529,10 @@ export function buildQuery(
     if (p.sliceZoom !== 1) q.set("zoom", `${r(p.sliceZoom, 2)}`);
   } else {
     if (t !== d.technique) q.set("integrator", t);
+    if (p.axes) q.set("axes", "1");
+    if (p.axes && p.axesGizmo) q.set("axesGizmo", "1");
     if (p.tonemap !== d.tonemap) q.set("tonemap", p.tonemap);
-    if (p.shadeModel !== d.shadeModel && ["ea", "scatter", "iso"].includes(t))
+    if (p.shadeModel !== d.shadeModel && (iso || ["ea", "scatter"].includes(t)))
       q.set("shadeModel", p.shadeModel);
     if (t === "pathtrace" && p.ptEnv !== d.ptEnv) q.set("ptEnv", p.ptEnv);
     if (t === "eikonal") {

@@ -17,6 +17,7 @@ body {
 canvas.view {
   display: block;
   touch-action: none; /* pointer events handle all gestures */
+  outline: none; /* focusable (tabIndex) for Esc-refocus; no focus ring */
 }
 
 /* Default fullscreen mode; ?size=N switches to a fixed top-left canvas. */
@@ -67,6 +68,7 @@ canvas.view-fill {
   top: 12px;
   left: auto;
   right: 300px;
+  width: 420px;
 }
 
 .hy-panel-head {
@@ -266,7 +268,17 @@ canvas.view-fill {
 .hy-stop-list {
   display: flex;
   flex-direction: column;
+  gap: 8px;
+}
+
+.hy-stop-card {
+  display: flex;
+  flex-direction: column;
   gap: 4px;
+  padding: 6px 6px 7px;
+  background: #262626;
+  border: 1px solid #383838;
+  border-radius: 5px;
 }
 
 .hy-stop-row {
@@ -274,6 +286,35 @@ canvas.view-fill {
   grid-template-columns: 34px 1fr 44px 20px;
   align-items: center;
   gap: 8px;
+}
+
+/* OKLCH per-stop editor (three perceptual sliders under each stop). */
+.hy-lch-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px 8px;
+}
+
+.hy-lch-slot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.hy-lch-lab {
+  color: #8a8a8a;
+  font: 11px ui-monospace, monospace;
+  width: 8px;
+  flex: none;
+}
+
+.hy-lch-val {
+  color: #999;
+  font: 10px ui-monospace, monospace;
+  min-width: 26px;
+  text-align: right;
+  flex: none;
 }
 
 .hy-color {

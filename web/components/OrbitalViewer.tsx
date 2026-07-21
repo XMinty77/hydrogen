@@ -177,6 +177,10 @@ export default function OrbitalViewer() {
 
       // ----------------------------------------------------------------- GUI
       const gui = new GUI({ title: "hydrogen" });
+      // Hide the root's collapsible title bar: it would fold the whole panel
+      // away, which the G key (show/hide) already does more cleanly. The folders
+      // become the top level. (lil-gui always builds a $title element.)
+      (gui as unknown as { $title: HTMLElement }).$title.style.display = "none";
       cleanups.push(() => gui.destroy());
 
       // -- state ------------------------------------------------------------
@@ -223,11 +227,12 @@ export default function OrbitalViewer() {
 
       // -- display ----------------------------------------------------------
       const fDisplay = gui.addFolder("display");
-      fDisplay.add(params, "color", ["ramp", "signed", "phase"]).listen();
+      fDisplay.add(params, "color", ["ramp", "signed", "phase", "okphase"]).listen();
       fDisplay.add(params, "value", ["density", "amplitude"]);
       fDisplay.add(params, "gamma", 0.2, 1, 0.01);
       fDisplay.add(params, "compress", ["off", "log", "asinh"]);
       fDisplay.add(params, "compressK", 1, 500, 1);
+      fDisplay.add(params, "compressWhite", 1, 32, 0.1).name("white point ×q999");
       fDisplay.add(params, "tonemap", ["gamma", "agx"]);
       fDisplay.add(params, "exposure", -4, 4, 0.05);
       fDisplay.add(params, "dither");
@@ -240,6 +245,7 @@ export default function OrbitalViewer() {
       fPalette.add(params, "rampSpace", ["oklab", "srgb"]);
       fPalette.add(params, "phaseVivid");
       fPalette.add(params, "phaseChromaPow", 0, 1, 0.01);
+      fPalette.add(params, "okPhaseSigned").name("okphase: signed hue");
       fPalette
         .add({ open: () => palettePanel.toggle() }, "open")
         .name("palette editor…");
@@ -260,7 +266,11 @@ export default function OrbitalViewer() {
 
       // -- volume: technique + its per-technique subfolders ------------------
       const fVolume = gui.addFolder("volume");
-      fVolume.add(params, "technique", TECHNIQUES as unknown as string[]).onChange(syncFolders);
+      // Eikonal is hidden from the menu (still reachable via ?integrator=eikonal
+      // and its folder still appears when selected) — the implementation stays.
+      fVolume
+        .add(params, "technique", TECHNIQUES.filter((t) => t !== "eikonal") as unknown as string[])
+        .onChange(syncFolders);
       fVolume.add(params, "steps", 64, 1200, 1);
       fVolume.add(params, "density", 1, 50, 0.5);
       fVolume.add(params, "opacityPow", 0.5, 4, 0.05);
@@ -293,6 +303,7 @@ export default function OrbitalViewer() {
       fIso.add(params, "isoAlpha", 0.05, 1, 0.01);
       fIso.add(params, "isoEmission", 0, 10, 0.05);
       fIso.add(params, "isoRim", 0, 10, 0.05);
+      fIso.add(params, "isoAmbient", 0, 1, 0.01).name("ambient (ramp floor)");
 
       const fShade = fVolume.addFolder("surface shading");
       fShade.add(params, "shadeModel", SHADE_MODELS as unknown as string[]);
@@ -347,9 +358,11 @@ export default function OrbitalViewer() {
         .listen();
       fCamera.add(rig, "azDeg", -180, 180, 0.1).listen();
       fCamera.add(rig, "elDeg", -89, 89, 0.1).listen();
-      fCamera.add(rig, "dist", 1.05, 12, 0.01).listen();
+      fCamera.add(rig, "dist", 0.15, 12, 0.01).listen();
       fCamera.add(rig, "flySpeed", 0.05, 3, 0.01);
       fCamera.add(params, "fov", 20, 90, 1);
+      fCamera.add(params, "axes").name("orientation axes");
+      fCamera.add(params, "axesGizmo").name("↳ compact gizmo");
 
       // -- clip planes ------------------------------------------------------
       const fClips = gui.addFolder("clip planes").close();
@@ -379,16 +392,17 @@ export default function OrbitalViewer() {
       function syncFolders() {
         const vol = params.view === "volume";
         const t = params.technique;
+        const iso = t === "iso" || t === "isolegacy";
         const show = (f: GUI, cond: boolean) => (cond ? f.show() : f.hide());
         show(fSlice, !vol);
         show(fVolume, vol);
         show(fCamera, vol);
         show(fClips, vol);
-        show(fLight, vol && ["ea", "scatter", "iso", "pathtrace"].includes(t));
+        show(fLight, vol && (iso || ["ea", "scatter", "pathtrace"].includes(t)));
         show(fScatter, vol && t === "scatter");
         show(fMida, vol && t === "mida");
-        show(fIso, vol && t === "iso");
-        show(fShade, vol && ["ea", "scatter", "iso"].includes(t));
+        show(fIso, vol && iso);
+        show(fShade, vol && (iso || ["ea", "scatter"].includes(t)));
         show(fPt, vol && t === "pathtrace");
         show(fEik, vol && t === "eikonal");
       }
@@ -448,8 +462,20 @@ export default function OrbitalViewer() {
         document.activeElement instanceof HTMLSelectElement ||
         document.activeElement instanceof HTMLButtonElement;
       let guiVisible = true;
+      // Which overlay panels were open when the UI was last hidden (G) — so
+      // bringing the UI back restores them instead of losing the palette editor.
+      let panelMemory = { terms: false, palette: false };
       let wantCapture = false;
       on(window, "keydown", (e: KeyboardEvent) => {
+        // Esc anywhere returns focus to the canvas: blur whatever GUI input or
+        // control holds it (which otherwise swallows the global keybinds below)
+        // so Space/R/C/… work again immediately. The browser also uses Esc to
+        // exit pointer lock in fly mode — refocusing the canvas is harmless there.
+        if (e.code === "Escape") {
+          (document.activeElement as HTMLElement | null)?.blur?.();
+          canvas.focus();
+          return;
+        }
         if (guiHasFocus()) return;
         rig.keyDown(e.code);
         switch (e.code) {
@@ -475,8 +501,12 @@ export default function OrbitalViewer() {
             guiVisible = !guiVisible;
             gui.show(guiVisible);
             if (!guiVisible) {
+              panelMemory = { terms: termsPanel.visible, palette: palettePanel.visible };
               termsPanel.hide();
               palettePanel.hide();
+            } else {
+              if (panelMemory.terms) termsPanel.show();
+              if (panelMemory.palette) palettePanel.show();
             }
             break;
           case "KeyH":
@@ -554,6 +584,7 @@ export default function OrbitalViewer() {
           params.gamma, params.compress, params.compressK, params.ramp,
           params.ramp === "custom" ? params.rampStops : 0,
           params.rampSpace, params.phaseVivid, params.phaseChromaPow,
+          params.okPhaseSigned,
           params.phaseL, params.phaseC, params.phaseH0Deg,
           params.density, params.opacityPow, params.emission,
           params.lightAz, params.lightEl, params.lightGain, params.hgG,
@@ -607,9 +638,11 @@ export default function OrbitalViewer() {
           valueMode: params.value === "amplitude" ? 1 : 0,
           compressMode: COMPRESS[params.compress],
           compressK: params.compressK,
+          compressWhite: params.compressWhite,
           dither: params.dither,
           phaseVivid: params.phaseVivid,
           phaseChromaPow: params.phaseChromaPow,
+          okPhaseSigned: params.okPhaseSigned,
           phaseL: params.phaseL,
           phaseC: params.phaseC,
           phaseH0Rad: (params.phaseH0Deg * Math.PI) / 180,
@@ -703,6 +736,7 @@ export default function OrbitalViewer() {
               light,
               shade,
               integrator: INTEGRATOR[params.technique],
+              isoLegacy: params.technique === "isolegacy",
               steps: params.steps,
               densityScale: params.density,
               opacityPow: params.opacityPow,
@@ -723,8 +757,14 @@ export default function OrbitalViewer() {
               isoAlpha: params.isoAlpha,
               isoEmission: params.isoEmission,
               isoRim: params.isoRim,
+              isoAmbient: params.isoAmbient,
             });
           }
+          // Orientation axes: blended over the finished frame, so they track
+          // the live camera regardless of which integrator drew it. Gizmo mode
+          // clusters short arms around the origin/crosshair (Minecraft F3 look).
+          if (params.axes)
+            renderer.renderAxes(camera, framing() * (params.axesGizmo ? 0.22 : 1));
         }
 
         if (wantCapture) captureFrame();
@@ -783,7 +823,8 @@ export default function OrbitalViewer() {
 
   return (
     <>
-      <canvas ref={canvasRef} className="view view-fill" />
+      {/* tabIndex makes the canvas programmatically focusable (Esc refocus). */}
+      <canvas ref={canvasRef} className="view view-fill" tabIndex={-1} />
       <div ref={statsRef} className="stats">
         loading tables + shaders…
       </div>
