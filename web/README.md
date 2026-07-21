@@ -104,8 +104,11 @@ downscale — true supersampled anti-aliasing, the way to get crisp isosurface
 silhouettes (2× ≈ 4 samples/pixel). An auto governor drops resolution when
 frames stall and restores it with headroom (off-switch included; never touches
 the path tracer's accumulation). Isosurface normals are taken from the raw
-|ψ|² field (not the tone-mapped brightness) and the shell march is jittered
-per pixel, so shading stays smooth and the marching grid never bands.
+|ψ|² field (not the tone-mapped brightness) so shading stays smooth, and the
+outer silhouette is analytically feathered — rays whose peak brightness falls
+just short of the outermost shell still deposit a fractional sliver of it, so
+the edge fades smoothly instead of terracing at the marching resolution (the
+step count no longer has to be cranked up to get a clean outline).
 
 ## URL parameters
 
