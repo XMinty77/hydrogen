@@ -127,7 +127,9 @@ export function defaultParams() {
     phaseC: NaN,
     phaseH0Deg: NaN,
 
-    /** Canvas backing-store scale relative to CSS pixels × devicePixelRatio. */
+    /** Canvas backing-store scale relative to CSS pixels × devicePixelRatio.
+     * < 1 renders below display resolution (fast, for weak GPUs); > 1
+     * oversamples and lets the browser downscale — supersampled AA. */
     renderScale: 0.25,
     /** Drop resolution automatically when the frame rate tanks (low-end GPUs);
      * the slider above stays the upper bound. */

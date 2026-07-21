@@ -145,7 +145,13 @@ export default function OrbitalViewer() {
       const termsPanel = new TermsPanel({
         params,
         nMax: asset.nMax,
-        onChange: () => syncUrl(),
+        onChange: () => {
+          // Keep the main GUI in step with params: the editor can rewrite n,l,m
+          // when it collapses a 1-term list on close, so re-run clampState (it
+          // refreshes the l/m slider ranges and displays) and resync the URL.
+          clampState();
+          syncUrl();
+        },
         onPreset: (mode, timeScale) => {
           params.mode = mode;
           params.color = mode === "real" ? "ramp" : "phase";
@@ -256,7 +262,10 @@ export default function OrbitalViewer() {
 
       // -- quality ----------------------------------------------------------
       const fQuality = gui.addFolder("quality").close();
-      fQuality.add(params, "renderScale", 0.05, 1.5, 0.01);
+      // Above 1 the backing store is larger than the display and the browser
+      // downsamples it — true supersampled anti-aliasing (SSAA). 2 = 4×
+      // samples/pixel (smooth), up to 4 = 16× for stills on a strong GPU.
+      fQuality.add(params, "renderScale", 0.05, 4, 0.05).name("render scale (≥1 = SSAA)");
       fQuality.add(params, "autoQuality").name("auto (drop res when slow)");
 
       // -- slice ------------------------------------------------------------

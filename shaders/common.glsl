@@ -446,6 +446,21 @@ vec3 fieldGradient(vec3 p, float h) {
                 fieldBright(p + e.yyx) - fieldBright(p - e.yyx)) / (2.0 * h);
 }
 
+// |ψ|² and its gradient. Isosurface normals use THIS rather than fieldGradient:
+// the display brightness folds in gamma/compress/clamp, whose slopes vary
+// wildly (steep near 0 from the gamma pow, exactly 0 in saturated cores) and
+// roughen the finite-difference normal into faceted shading. Brightness is
+// monotone in |ψ|², so the level set — and hence the surface — is identical;
+// only the normal comes out clean. h in world units.
+float fieldDensity(vec3 p) { vec2 z = evalPsi(p); return dot(z, z); }
+
+vec3 fieldDensityGradient(vec3 p, float h) {
+    vec2 e = vec2(h, 0.0);
+    return vec3(fieldDensity(p + e.xyy) - fieldDensity(p - e.xyy),
+                fieldDensity(p + e.yxy) - fieldDensity(p - e.yxy),
+                fieldDensity(p + e.yyx) - fieldDensity(p - e.yyx)) / (2.0 * h);
+}
+
 // ---------------------------------------------------------------------------
 // Camera + domain geometry.
 // ---------------------------------------------------------------------------

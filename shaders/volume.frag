@@ -163,11 +163,11 @@ float ambientOcclusion(vec3 p, float rot) {
 // Isosurface helpers.
 // ---------------------------------------------------------------------------
 
-// Bisection refinement of a bracketed level crossing (6 halvings on top of
-// the marching step ⇒ sub-1/64-step surface placement).
+// Bisection refinement of a bracketed level crossing (8 halvings on top of
+// the marching step ⇒ sub-1/256-step surface placement).
 float refineHit(vec3 ro, vec3 rd, float ta, float tb, float level) {
     float fa = fieldBright(ro + ta * rd) - level;
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 8; i++) {
         float tm = 0.5 * (ta + tb);
         float fm = fieldBright(ro + tm * rd) - level;
         if ((fm < 0.0) == (fa < 0.0)) { ta = tm; fa = fm; }
@@ -199,8 +199,9 @@ void shadeIsoHit(vec3 p, vec3 rd, float level, float jitter,
     vec2 psi = evalPsi(p);
 
     float h = max(uGradDelta, 1e-4) * uRMax;
-    vec3 g = fieldGradient(p, h);
-    vec3 N = -normalize(g + 1e-12);        // outward: brightness falls outward
+    vec3 g = fieldDensityGradient(p, h);   // smooth |ψ|² normal, not the
+                                           // gamma-compressed brightness normal
+    vec3 N = -normalize(g + 1e-12);        // outward: density falls outward
     vec3 V = -rd;
     if (dot(N, V) < 0.0) N = -N;           // two-sided shells
     float ndv = max(dot(N, V), 0.0);
@@ -264,15 +265,19 @@ void main() {
 
         } else if (uIntegrator == 4) {
             // ---- Emissive isosurfaces. --------------------------------------
-            // March without jitter (surfaces are deterministic geometry; the
-            // bisection kills stepping error), detect all level crossings per
-            // step, shade them in ray order.
+            // Detect all level crossings per step, refine each by bisection
+            // (so the surface position is exact regardless of the grid), and
+            // shade them in ray order. The scan grid is jittered per pixel:
+            // the bisection makes hits grid-independent, so jitter costs no
+            // surface accuracy but decorrelates the marching pattern — the
+            // coherent chevrons/rings a fixed grid bakes in become fine noise
+            // that supersampling and dither absorb.
             vec3 accum = vec3(0.0);
             float transmit = 1.0;
             float tPrev = t0;
-            float fPrev = fieldBright(uCamPos + t0 * dir);
+            float fPrev = fieldBright(uCamPos + tPrev * dir);
             for (int i = 1; i <= uSteps; i++) {
-                float t = t0 + float(i) * dt;
+                float t = min(t0 + (float(i) - 1.0 + jitter) * dt, t1);
                 float f = fieldBright(uCamPos + t * dir);
 
                 // Gather crossings of every active level inside this step,

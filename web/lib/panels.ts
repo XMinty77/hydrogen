@@ -152,6 +152,22 @@ export class TermsPanel {
   }
 
   hide() {
+    // Collapse a lone (or empty) term list back to the single-state path on
+    // close. Opening the editor seeds the current state as term 1 (so it always
+    // starts from what's on screen), but leaving that 1-term "superposition"
+    // in place would silently shadow the main n,l,m controls — the render uses
+    // the term list whenever it is non-empty. A real superposition (≥2 terms)
+    // is untouched; a single term is equivalent to the plain state anyway
+    // (amplitude/global-phase are absorbed by normalization), so copy its
+    // quantum numbers back and clear the list.
+    const p = this.opts.params;
+    if (p.terms.length === 1) {
+      p.n = p.terms[0].n;
+      p.l = p.terms[0].l;
+      p.m = p.terms[0].m;
+      p.terms = [];
+      this.opts.onChange();
+    }
     this.root.style.display = "none";
   }
 

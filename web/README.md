@@ -98,9 +98,14 @@ P save PNG (canvas only, no UI), U copy view URL, G hide the panels, H help.
 **Esc** returns focus to the canvas from any GUI field so the global keys work
 again immediately (and, in fly mode, releases the pointer lock as usual).
 
-**Quality**: `renderScale` down to 0.05× for weak GPUs, plus an auto governor
-that drops resolution when frames stall and restores it when there is
-headroom (off-switch included; never touches the path tracer's accumulation).
+**Quality**: `renderScale` spans 0.05×–4×. Below 1 it renders under display
+resolution (fast, weak GPUs); above 1 it oversamples and lets the browser
+downscale — true supersampled anti-aliasing, the way to get crisp isosurface
+silhouettes (2× ≈ 4 samples/pixel). An auto governor drops resolution when
+frames stall and restores it with headroom (off-switch included; never touches
+the path tracer's accumulation). Isosurface normals are taken from the raw
+|ψ|² field (not the tone-mapped brightness) and the shell march is jittered
+per pixel, so shading stays smooth and the marching grid never bands.
 
 ## URL parameters
 
