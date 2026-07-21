@@ -515,11 +515,22 @@ export class OrbitalRenderer {
 
   /** Blend the 3-D orientation axes over the finished frame (call last, after
    * whichever integrator drew the canvas). Shares the live camera so the arms
-   * track every rotation; `axisLen` is the arm half-length in world a₀. */
-  renderAxes(camera: CameraParams, axisLen: number) {
+   * track every rotation. `axisLen` is the arm half-length in world a₀ (huge ⇒
+   * the arms read as infinite lines); `near` is the view-space near clip in the
+   * same units. Line thickness is specified in CSS pixels and scaled to the
+   * backing store here, so it looks identical at any render scale. */
+  renderAxes(camera: CameraParams, axisLen: number, near: number) {
     const gl = this.gl;
     const w = gl.drawingBufferWidth;
     const h = gl.drawingBufferHeight;
+    // Backing-store pixels per CSS pixel (= dpr·renderScale·qualityMul). The
+    // canvas backing store grows with the render scale, so a fixed pixel width
+    // would look thinner the more we supersample; scale by this to hold the
+    // on-screen thickness constant. Falls back to 1 for the fixed-size shot mode.
+    const cssH = (gl.canvas as HTMLCanvasElement).clientHeight || h;
+    const ratio = h / cssH;
+    const cssThickness = 1.4; // half-width in CSS pixels
+    const cssFeather = 1.5; // AA falloff in CSS pixels
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     this.draw(this.axesPi, {
@@ -531,7 +542,9 @@ export class OrbitalRenderer {
       uAspect: w / h,
       uResolution: [w, h],
       uAxisLen: axisLen,
-      uAxisThickness: 1.4,
+      uAxisThickness: cssThickness * ratio,
+      uAxisFeather: cssFeather * ratio,
+      uAxisNear: near,
       uAxisAlpha: 1.0,
     });
     gl.disable(gl.BLEND);

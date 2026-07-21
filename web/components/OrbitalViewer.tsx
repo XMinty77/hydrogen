@@ -264,8 +264,8 @@ export default function OrbitalViewer() {
       const fQuality = gui.addFolder("quality").close();
       // Above 1 the backing store is larger than the display and the browser
       // downsamples it — true supersampled anti-aliasing (SSAA). 2 = 4×
-      // samples/pixel (smooth), up to 4 = 16× for stills on a strong GPU.
-      fQuality.add(params, "renderScale", 0.05, 4, 0.05).name("render scale (≥1 = SSAA)");
+      // samples/pixel (smooth), up to 8 = 64× for stills on a strong GPU.
+      fQuality.add(params, "renderScale", 0.05, 8, 0.05).name("render scale (≥1 = SSAA)");
       fQuality.add(params, "autoQuality").name("auto (drop res when slow)");
 
       // -- slice ------------------------------------------------------------
@@ -775,9 +775,14 @@ export default function OrbitalViewer() {
           }
           // Orientation axes: blended over the finished frame, so they track
           // the live camera regardless of which integrator drew it. Gizmo mode
-          // clusters short arms around the origin/crosshair (Minecraft F3 look).
-          if (params.axes)
-            renderer.renderAxes(camera, framing() * (params.axesGizmo ? 0.22 : 1));
+          // clusters short arms around the origin/crosshair (Minecraft F3 look);
+          // otherwise the arms run ~1000 framing radii — effectively infinite
+          // lines through the scene. The near clip stays tied to the framing,
+          // not the arm length, so an infinite arm doesn't clip away the origin.
+          if (params.axes) {
+            const f = framing();
+            renderer.renderAxes(camera, f * (params.axesGizmo ? 0.22 : 1000), f * 0.002);
+          }
         }
 
         if (wantCapture) captureFrame();

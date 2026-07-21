@@ -8,8 +8,10 @@
 // stage, so the axes are drawn the same way: a fullscreen pass that, for each
 // pixel, measures its screen-space distance to each projected axis segment and
 // paints an anti-aliased colored line. X → red, Y → green, Z → blue (the
-// conventional mapping). Positive arms are bright and full-length; negative
-// arms are dim, so the handedness and the current rotation are both legible.
+// conventional mapping). Positive arms are bright, negative arms are dim, so the
+// handedness and the current rotation are both legible. uAxisLen sets the arm
+// length: a small value clusters a compact gizmo around the origin, a huge one
+// makes each arm read as an infinite line through the scene (the host picks).
 //
 // Segments are clipped to a near plane in view space before projection, so an
 // arm whose far tip passes behind the camera (when dollied in close) still
@@ -24,8 +26,15 @@ uniform vec3  uCamFwd;
 uniform float uTanHalfFov;     // tan(vertical FOV / 2)
 uniform float uAspect;         // width / height
 uniform vec2  uResolution;     // framebuffer size, pixels
-uniform float uAxisLen;        // arm half-length, world (a₀)
-uniform float uAxisThickness;  // line half-width, pixels
+uniform float uAxisLen;        // arm half-length, world (a₀); huge ⇒ "infinite"
+uniform float uAxisThickness;  // line half-width, framebuffer pixels (the host
+                               // scales it by the render-scale so the apparent
+                               // thickness is constant on screen)
+uniform float uAxisFeather;    // anti-alias falloff width, framebuffer pixels
+                               // (scaled the same way as the thickness)
+uniform float uAxisNear;       // view-space near plane, world (a₀) — decoupled
+                               // from uAxisLen so an infinite arm keeps a small
+                               // near clip instead of hiding the whole origin
 uniform float uAxisAlpha;      // overall overlay opacity
 
 in vec2 vUv;
@@ -69,7 +78,7 @@ void arm(vec2 frag, float near, vec3 dir, float len, vec3 col, float alpha,
     vec3 b = toView(dir * len);
     if (!clipNear(a, b, near)) return;
     float d = segDist(frag, viewToPixel(a), viewToPixel(b));
-    float c = alpha * (1.0 - smoothstep(uAxisThickness, uAxisThickness + 1.5, d));
+    float c = alpha * (1.0 - smoothstep(uAxisThickness, uAxisThickness + uAxisFeather, d));
     if (c <= cov) return;                     // keep the nearest/strongest line
     rgb = col;
     cov = c;
@@ -77,7 +86,7 @@ void arm(vec2 frag, float near, vec3 dir, float len, vec3 col, float alpha,
 
 void main() {
     vec2 frag = gl_FragCoord.xy;
-    float near = max(uAxisLen * 0.002, 1e-3);
+    float near = max(uAxisNear, 1e-4);
 
     vec3 rgb = vec3(0.0);
     float cov = 0.0;

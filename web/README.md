@@ -89,19 +89,20 @@ current sphere and W/S change its radius. Azimuths wrap, elevations clamp —
 no angle ever runs away. Dolly distance now reaches down to 0.15 framing radii
 (right into the core). The camera folder's **orientation axes** toggle blends
 analytic 3-D axes (X red, Y green, Z blue) over the frame — a rotation aid
-that tracks the live camera. Its **compact gizmo** sub-toggle shortens the arms
-to a small cluster around the origin/crosshair (a Minecraft-F3-style indicator)
-instead of full arms spanning the domain.
+that tracks the live camera — full-length lines running out to infinity through
+the scene, at a constant on-screen thickness whatever the render scale. Its
+**compact gizmo** sub-toggle instead shortens the arms to a small cluster around
+the origin/crosshair (a Minecraft-F3-style indicator).
 
 **Keyboard** (press **H** or **?** in the app): Space/R time, C center lock,
 P save PNG (canvas only, no UI), U copy view URL, G hide the panels, H help.
 **Esc** returns focus to the canvas from any GUI field so the global keys work
 again immediately (and, in fly mode, releases the pointer lock as usual).
 
-**Quality**: `renderScale` spans 0.05×–4×. Below 1 it renders under display
+**Quality**: `renderScale` spans 0.05×–8×. Below 1 it renders under display
 resolution (fast, weak GPUs); above 1 it oversamples and lets the browser
 downscale — true supersampled anti-aliasing, the way to get crisp isosurface
-silhouettes (2× ≈ 4 samples/pixel). An auto governor drops resolution when
+silhouettes (2× ≈ 4 samples/pixel, 8× ≈ 64× for stills on a strong GPU). An auto governor drops resolution when
 frames stall and restores it with headroom (off-switch included; never touches
 the path tracer's accumulation). Isosurface normals are taken from the raw
 |ψ|² field (not the tone-mapped brightness), so shell shading stays smooth; the
