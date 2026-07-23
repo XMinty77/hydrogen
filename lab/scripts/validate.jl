@@ -9,8 +9,8 @@
 #
 # Sections:
 #   1. Float64 recurrences vs BigFloat        (how good is the fast reference?)
-#   2. Float32 *direct* recurrences vs BigFloat  (what the prototype's GPU
-#      kernel effectively did — the baseline the table approach replaces)
+#   2. Float32 *direct* recurrences vs BigFloat  (the baseline replaced by
+#      the table approach)
 #   3. Table-size sweep on the worst states   (why 8192/4096 samples)
 #   4. Full production-size table sweep       (worst per-factor error, all states)
 #   5. End-to-end FP32 ψ reconstruction       (the headline number)

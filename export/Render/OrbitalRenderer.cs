@@ -50,7 +50,7 @@ public record CommonParams
     public required int L { get; init; }
     public required int M { get; init; }
     public required bool RealMode { get; init; }
-    /// <summary>0 ramp, 1 signed (real mode), 2 phase (complex mode).</summary>
+    /// <summary>0 ramp, 1 signed, 2 phase, 3 palette-relative phase.</summary>
     public required int ColorMode { get; init; }
     public required int Width { get; init; }
     public required int Height { get; init; }
@@ -67,8 +67,7 @@ public record CommonParams
     /// <summary>User-supplied ramp used when RampName == "custom"
     /// (--ramp-stops hex@pos,… — the web palette editor's URL codec).</summary>
     public Ramp? CustomRamp { get; init; } = null;
-    /// <summary>Interpolate ramp stops in gamma sRGB (prototype reproduction)
-    /// instead of OKLab.</summary>
+    /// <summary>Interpolate ramp stops in gamma sRGB instead of OKLab.</summary>
     public bool RampSpaceSrgb { get; init; } = false;
     public double Gamma { get; init; } = 0.45;
     /// <summary>0: brightness from |ψ|² (density), 1: from |ψ| (amplitude).</summary>
@@ -76,11 +75,14 @@ public record CommonParams
     /// <summary>Range compression before gamma: 0 off, 1 log, 2 asinh.</summary>
     public int CompressMode { get; init; } = 0;
     public double CompressK { get; init; } = 20.0;
+    /// <summary>Value in q999 multiples that maps to display white.</summary>
+    public double CompressWhite { get; init; } = 1.0;
     public bool Dither { get; init; } = true;
     /// <summary>Phase wheel: per-hue max chroma ("vivid") vs constant chroma.
-    /// Vivid + persistence 0.6 is the project default (user sign-off).</summary>
+    /// Vivid + persistence 0.6 is the project default.</summary>
     public bool PhaseVivid { get; init; } = true;
     public double PhaseChromaPow { get; init; } = 0.6;
+    public bool OkPhaseSigned { get; init; } = false;
 }
 
 public abstract class OrbitalRenderer
@@ -198,6 +200,7 @@ public abstract class OrbitalRenderer
         gl.Uniform1(Loc("uValueMode"), p.ValueMode);
         gl.Uniform1(Loc("uCompressMode"), p.CompressMode);
         gl.Uniform1(Loc("uCompressK"), (float)p.CompressK);
+        gl.Uniform1(Loc("uCompressWhite"), (float)p.CompressWhite);
 
         // --- palette ---------------------------------------------------------
         var ramp = p.RampName == "custom" && p.CustomRamp != null
@@ -222,8 +225,12 @@ public abstract class OrbitalRenderer
         gl.Uniform1(Loc("uPhaseH0"), Palettes.PhaseH0);
         gl.Uniform1(Loc("uPhaseVivid"), p.PhaseVivid ? 1 : 0);
         gl.Uniform1(Loc("uPhaseChromaPow"), (float)p.PhaseChromaPow);
+        gl.Uniform1(Loc("uOkPhaseSigned"), p.OkPhaseSigned ? 1 : 0);
         gl.Uniform1(Loc("uDitherAmp"), p.Dither ? 1.0f / 255.0f : 0.0f);
         gl.Uniform1(Loc("uColorMode"), p.ColorMode);
+        // The offline host renders the analytic base without a web flow layer.
+        gl.Uniform1(Loc("uFlowOverlayEnabled"), 0);
+        gl.Uniform1(Loc("uFlowBase"), 1.0f);
     }
 
     /// <summary>Rebuild the row textures when the term list's states change.</summary>

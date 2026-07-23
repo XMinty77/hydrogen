@@ -1,148 +1,235 @@
-# web/ — interactive demo
+# web — interactive renderer
 
-Next.js (static export) + WebGL2 host for the shared GLSL renderer in
-`../shaders/`. No physics or color code lives here: the app fetches the same
-baked asset (`../assets/orbitals.bin`, n ≤ 25), palettes, and shader sources
-the C# export host uses, assembled under the identical
-`prelude.glsl + common.glsl + <view>.frag` contract. Verified against the
-lab's FP64→FP32 CPU reference at ≤ 1 LSB (8-bit), and against the C# host at
-≤ 1 LSB for URL round-trips.
+This directory contains the Next.js static shell around the shared WebGL2
+renderer. Physics and color evaluation remain in the baked asset and GLSL
+sources used by the C# export host; the web layer owns interaction, URL state,
+presets, GPU resource lifetime, and capture.
 
 ## Running
 
 ```sh
-export PATH="$HOME/.conda/envs/hydrogen/bin:$PATH"   # node 26 (this machine)
 npm install
-npm run dev      # http://localhost:3000 (predev syncs assets/shaders)
-npm run build    # static site in out/ — host anywhere, no server runtime
+npm run dev -- -p 3001
+npm run build
 ```
 
-`scripts/sync-assets.mjs` (auto-run before dev/build) mirrors the repo's
-assets and shaders into `public/generated/` — re-bake or edit a shader and
-reload, nothing else to do.
+`scripts/sync-assets.mjs`, invoked before development and production builds,
+copies `../assets/orbitals.bin`, `../assets/palettes.json`, and `../shaders/`
+into `public/generated/`. The production build is a static export in `out/`.
 
-## The UI
+## Interface
 
-lil-gui panel (top right), grouped as: **state** (n ≤ 25, all l, m;
-real/complex basis) · **time evolution** · **display** (color/value/gamma/
-compression + **white point**/tonemap/exposure) · **palette** · **quality** ·
-**slice plane** or **volume** (technique + per-technique subfolders) ·
-**camera** · **clip planes** · **capture**. Two custom panels open from it:
+The main control panel is organized by intent:
 
-The **color** modes are `ramp` (brightness → palette), `signed` (real mode:
-hue-reflected negative lobes), `phase` (complex mode: constant-lightness OKLCH
-hue wheel) and `okphase` — the palette's *own* color hue-rotated in OKLCH by
-arg ψ, so complex orbitals inherit the accretion look while hue still encodes
-phase. Its **okphase: signed hue** toggle additionally reflects the negative-real
-half across the signed mode's 250° OKLab axis, so ψ and −ψ read as complementary
-palette colors (gold ↔ magenta) instead of a bare 180° spin through arbitrary
-hues. The **white point ×q999** slider (paired with the log/asinh compression)
-pulls the saturated lobe cores — whose |ψ|² overshoots the q999 normalization
-many-fold and would otherwise clamp to one flat color — back into the ramp so
-their interior gradient shows.
+- **scene** — quantum state, superposition editor, view, and time evolution.
+- **appearance** — display mapping, palette editing, and screen-space finishing.
+- **rendering** — slice geometry or the selected volume technique and its
+  relevant controls.
+- **probability flow** — transport, seeding, and method-specific appearance.
+- **camera + clipping** — orbit/fly controls, orientation axes, and two clip
+  planes.
+- **output** — interactive quality, capture quality, URL copying, and help.
 
-- **Superposition editor** (`state ▸ superposition editor…`): build
-  ψ = Σ cₖ |n,l,m⟩ from up to 8 terms — per-term n/l/m, amplitude, phase —
-  with normalization, presets (sp/sp³ hybrids, the 1s–2p radiating-dipole
-  beat, shell breathing, a circular Rydberg wave packet), and a live hint
-  showing the slowest beat period. Works in either harmonic basis and in
-  every view, slices included.
-- **Palette editor** (`palette ▸ palette editor…`): draggable gradient stops
-  (click the bar to add one), true OKLab/sRGB-interpolated preview, and a
-  per-stop **OKLCH picker** (lightness / chroma / hue sliders alongside the
-  sRGB swatch — editing in the same perceptual space the ramp interpolates
-  through keeps a hand-tuned palette smooth). "Start from" any built-in ramp,
-  phase-wheel sliders (L/C/hue-zero), copy-URL and copy-JSON export. Edits
-  select the `custom` ramp and persist in the URL.
+The **browse presets…** button opens a separate curated panel. Presets live in
+`lib/presets.ts` and are grouped into superpositions and selected
+probability-flow studies. Applying one loads a deterministic scene and camera,
+resets stateful flow and path-tracing buffers, and preserves only interactive
+and capture quality preferences. Every resulting parameter remains editable.
 
-**Time evolution** multiplies each term by e^{−iEₙt} (atomic units; the log
-slider spans the 4 decades between 1s–2p beats and Rydberg orbit periods).
-Superpositions of different n genuinely move; single states spin their phase
-hue. Space = play/pause, R = rewind, and a paused moment's `t` lands in the
-URL so the exact frame is shareable.
+The superposition editor builds
 
-**Volume techniques** (`volume ▸ technique`, every parameter exposed):
-`mip` · `ea` (the certified default) · `scatter` (Wrenninge multi-scatter
-octaves + Henyey–Greenstein key light + Fibonacci ambient occlusion) ·
-`mida` (Bruckner & Gröller, γ blends EA↔MIDA↔MIP; pairs with the display
-folder's log/asinh compression) · `iso` (nested bisection-refined emissive
-shells, level sweep = "3D slides"; **palette-mapped shading** walks the ramp
-with the surface illumination — unlit faces sit at the shell's cool base
-color, the key light lifts lit faces toward the hot end — so one shell shows
-the full accretion gradient with 3-D form) · `isolegacy` (the same shells with
-the original pre-palette-mapped shading — self-glow at the shell brightness plus
-a white specular highlight; desaturates under strong light but keeps a glassier,
-more saturated look on phase/okphase states, kept for completeness) · `pathtrace`
-(progressive
-delta-tracking Monte Carlo with palette-tinted multiple scattering, NEE key
-light, environments, thin-lens DoF; accumulates while the view is still).
-`eikonal` (ψ as a gradient-index medium, curved rays, spherical environments,
-dispersion) is kept in the implementation but hidden from the menu — reach it
-with `?integrator=eikonal`. The **surface shading** subfolder
-(ea/scatter/iso) adds Lambert/Blinn–Phong/GGX responses gated by gradient
-confidence so only shell-like regions light up.
+    ψ = Σₖ cₖ |nₖ,lₖ,mₖ⟩
 
-**Cameras**: orbit (drag + wheel) or fly (click to capture the mouse,
-WASD + E/Q, Shift = fast). Inside fly mode, **C** toggles the center-locked
-variant: the view stays on the nucleus while A/D + E/Q slide you around the
-current sphere and W/S change its radius. Azimuths wrap, elevations clamp —
-no angle ever runs away. Dolly distance now reaches down to 0.15 framing radii
-(right into the core). The camera folder's **orientation axes** toggle blends
-analytic 3-D axes (X red, Y green, Z blue) over the frame — a rotation aid
-that tracks the live camera — full-length lines running out to infinity through
-the scene, at a constant on-screen thickness whatever the render scale. Its
-**compact gizmo** sub-toggle instead shortens the arms to a small cluster around
-the origin/crosshair (a Minecraft-F3-style indicator).
+from at most eight terms. Each row exposes quantum numbers, amplitude, and
+initial phase; optional normalization and the live beat-period estimate help
+compare stationary same-energy combinations with moving multi-energy states.
+The six supplied superposition presets are sp, sp³, a 1s–2p dipole beat,
+2s+3s shell breathing, a 3s+3p+3d lobe, and a circular Rydberg packet.
 
-**Keyboard** (press **H** or **?** in the app): Space/R time, C center lock,
-P save PNG (canvas only, no UI), U copy view URL, G hide the panels, H help.
-**Esc** returns focus to the canvas from any GUI field so the global keys work
-again immediately (and, in fly mode, releases the pointer lock as usual).
+The palette editor supports draggable stops, sRGB or OKLab interpolation,
+per-stop OKLCH editing, phase-wheel controls, and URL/JSON export. Display
+color modes are:
 
-**Quality**: `renderScale` spans 0.05×–8×. Below 1 it renders under display
-resolution (fast, weak GPUs); above 1 it oversamples and lets the browser
-downscale — true supersampled anti-aliasing, the way to get crisp isosurface
-silhouettes (2× ≈ 4 samples/pixel, 8× ≈ 64× for stills on a strong GPU). An auto governor drops resolution when
-frames stall and restores it with headroom (off-switch included; never touches
-the path tracer's accumulation). Isosurface normals are taken from the raw
-|ψ|² field (not the tone-mapped brightness), so shell shading stays smooth; the
-silhouette itself is a plain crisp edge best resolved by supersampling (render
-scale > 1) — anything cleverer (per-pixel march jitter, an analytic coverage
-feather) stippled or moiré-banded the rims of overlapping transparent shells.
+- `ramp`: brightness through the selected ramp.
+- `signed`: real-wavefunction sign encoded by a reflected OKLab hue.
+- `phase`: argument of ψ encoded by the phase wheel.
+- `okphase`: the active ramp hue-rotated by argument of ψ, optionally with a
+  complementary signed-half reflection.
 
-## URL parameters
+### Post processing
 
-Every control is scriptable and the address bar **mirrors the live view** —
-only values differing from the defaults are written, so the current picture is
-always copyable as a link, e.g.
+Post processing is opt-in and display-referred: it operates after the analytic
+renderer and any genuine-flow composite, so it cannot change ψ, density,
+probability current, clipping, or advection. The completed result is also what
+PNG capture exports. Available controls are:
 
+- **bloom** — soft-knee bright-pass threshold, intensity, blur radius,
+  iterations, independently scaled bloom buffer, saturation, tint, and
+  screen/additive compositing;
+- **color grade** — post exposure, contrast, saturation, and vibrance;
+- **lens finishing** — radial chromatic shift plus an independently centered,
+  aspect-aware vignette with amount, radius, softness, and roundness;
+- **film grain** — amount, grain size, refresh rate, and monochrome/colored
+  noise. Automated screenshots and captures advance it deterministically.
+
+Bloom works from a separate downsampled ping-pong buffer, so `buffer scale`,
+`blur iterations`, and `blur radius` trade cost against spread independently.
+Orientation axes resolve after post processing and remain crisp measurement
+overlays.
+
+## Analytic rendering
+
+Slices can use the `xz`, `xy`, `yz`, or an arbitrary oriented and offset
+plane. Volume techniques are:
+
+- `mip`: maximum-intensity projection.
+- `ea`: emission–absorption, the default translucent density renderer.
+- `scatter`: EA plus directional shadowing and anisotropic ambient
+  multi-scattering.
+- `mida`: a continuous EA–MIDA–MIP blend.
+- `iso`: nested, refined probability-density isosurfaces with palette-mapped
+  lighting.
+- `isolegacy`: the same isosurfaces with self-emissive shell color and white
+  specular response.
+- `pathtrace`: progressive delta-tracking volume path tracing.
+- `eikonal`: curved rays in a density-derived refractive-index field. It is
+  intentionally absent from the technique dropdown but remains available
+  through `?integrator=eikonal`.
+
+The volume renderer exposes extinction, emission, transfer mapping, light,
+multi-scatter, isosurface, local-shading, path-tracing, and eikonal parameters
+only where they are relevant. Two independently oriented clip planes apply to
+volume density and active probability-flow overlays.
+
+## Probability flow
+
+The flow renderer differentiates the complex wavefunction rather than wrapped
+phase and computes the spinless current and regularized transport field:
+
+    j = Im(conj(ψ) ∇ψ)
+    vε = j / (ρ + ε)
+
+`ε` only regularizes nodes. Euler and midpoint/RK2 integration, second- and
+fourth-order derivatives, 1–4 substeps, forward/reverse time, and a spatial
+safety cap are exposed. The procedural material source is fixed in world
+space, so a real single state is a strict zero-current control whose visible
+material remains stationary.
+
+Five presentations are active:
+
+- **ink** backtraces a persistent slice texture through the in-plane
+  component of `vε`. Normal flow attenuates material rather than appearing as
+  false planar motion. Injection scale, rate, decay, diffusion, contrast,
+  through-plane loss, and opacity are separate controls.
+- **motes** advect discrete persistent GPU samples with minimal temporal
+  history.
+- **trails** add local displacement-oriented streaks and a decaying HDR
+  history buffer, revealing direction and shear.
+- **accretion** uses the same transported particles with longer-lived,
+  additive cores and halos. On circular states its disk motion comes from the
+  orbital current itself.
+- **granular** semi-Lagrangian-advects a persistent RGB passive-material
+  field in a 3-D atlas. A bounded MacCormack correction limits numerical
+  diffusion. Raymarching combines that material with freshly evaluated
+  analytic density, then uses expectation-preserving stochastic sparsity to
+  make the evolving texture visible throughout the volume.
+
+Particle seeding can be density-, flux-, or uniformly biased. Density and
+flux modes use interactive rejection sampling and are visualization seeds,
+not exact Born-distribution samples. Once accepted, every particle and dye
+sample follows `vε`; no visual treatment adds a decorative velocity.
+
+The flow palette may encode speed, material/age, or phase. The granular
+method separately exposes atlas resolution, ray steps, source fBm,
+injection/decay/diffusion, correction strength, signal mapping, extinction,
+emission, opacity, ray jitter, grain coverage, spatial frequency, and temporal
+refresh. Atlas and raymarch resolution are deliberately independent. The
+RGBA8 atlas avoids requiring float-render-target extensions.
+
+## Cameras and interaction
+
+Volume view supports an orbit camera and a pointer-locked fly camera. In fly
+mode, center lock keeps the view on the nucleus while movement traverses a
+sphere around it. Slice dragging rotates a custom plane and the wheel changes
+slice zoom.
+
+Keyboard controls:
+
+| Key | Action |
+|---|---|
+| Space | Play or pause time evolution. |
+| R | Reset simulated time. |
+| P | Render and download a PNG using the capture settings. |
+| U | Copy the current view URL. |
+| C | Toggle center-locked fly navigation. |
+| G | Hide or show all panels. |
+| H or ? | Open keyboard help. |
+| Esc | Return focus to the canvas and release pointer lock. |
+
+## Interactive and capture quality
+
+`renderScale` controls the live canvas backing store relative to CSS pixels
+and device pixel ratio. Values below one improve responsiveness; values above
+one provide supersampled antialiasing. The optional quality governor lowers
+only the live scale when frame time rises.
+
+PNG capture has independent settings:
+
+- `captureScale` temporarily replaces the live scale and ignores the quality
+  governor.
+- `captureSpp` is the progressive path-tracer convergence target.
+- `captureFlowFrames` rebuilds resolution-dependent ink and trail history at
+  the capture resolution.
+
+While capturing, time is frozen and transport advances at a fixed 1/60-second
+step. The renderer exports only after the selected convergence/history target,
+then restores the interactive backing-store size on the next frame. A
+`size=N` screenshot-harness URL remains authoritative over both live and
+capture scale.
+
+## URLs and automated screenshots
+
+The address bar mirrors non-default controls without adding navigation
+history. Unknown parameters are ignored. Representative URLs:
+
+```text
+?view=slice&state=2,1,1&mode=complex&plane=xy&flow=1&flowMethod=ink
+?state=4,3,3&mode=complex&flow=1&flowMethod=accretion&clip=up,0
+?state=3,2,2&mode=complex&flow=1&flowMethod=granular&flowColor=phase
+?terms=1,0,0;2,1,0&mode=real&color=signed&time=1&timeScale=4
+?integrator=iso&shadeModel=ggx&isoCount=3&scale=1
 ```
-?view=volume&state=4,2,1&mode=complex&camera=35,25,2.6&integrator=iso&shadeModel=ggx
-?view=volume&state=4,2,1&integrator=isolegacy&color=okphase   # legacy shell shading
-?state=4,2,1&color=okphase&okSigned=1&axes=1&axesGizmo=1&integrator=ea
-?state=1,0,0&view=slice&compress=log&compressWhite=10   # reveal the 1s core gradient
-?terms=1,0,0;2,1,0&mode=real&color=ramp&time=1&timeScale=4
-?ramp=custom&rampStops=05030f@0,3b1c58@0.35,e0562e@0.65,ffc94e@0.85,fff7e0@1
+
+The offline host accepts the shared analytic-render vocabulary:
+
+```sh
+dotnet run --project ../export -- url "<web URL>"
 ```
 
-The offline host consumes the same vocabulary:
-`dotnet run --project ../export -- url "<link>"` reproduces the browser's
-frame pixel-comparably.
+The exporter also consumes the post-processing URL vocabulary. Its CPU resolve
+mirrors the browser effects while leaving post-disabled renders unchanged.
 
-`size=N` fixes the canvas at N×N pixels and renders a single frame — the
-deterministic screenshot mode used by the harness; `spp=N` sets the path
-tracer's shot-mode convergence and `t=N` the simulated time:
+For deterministic browser captures, `size=N` fixes a square backing store,
+`spp=N` sets path-tracer convergence, `t=N` fixes simulated time, and
+`flowFrames=N` sets fixed-step flow warm-up:
 
 ```sh
 npm run shot -- "view=slice&state=4,2,1&size=1024" .shots/slice.png
-# SHOT_BASE overrides the server URL; SHOT_GPU=1 uses the real GPU via EGL.
 ```
+
+`SHOT_BASE` selects a non-default dev-server URL; `SHOT_GPU=1` requests the
+real GPU path.
 
 ## Code layout
 
-`components/OrbitalViewer.tsx` orchestrates; each concern lives in its own
-module under `lib/`: `params.ts` (parameter model + URL codec),
-`superposition.ts` (terms, presets, time evolution), `panels.ts` (custom
-overlay panels), `scene.ts` (slice/clip geometry), `cameras.ts`,
-`renderer.ts` (WebGL2 host, the C# host's twin), `horb.ts` / `palettes.ts`
-(asset readers), `color.ts` (OKLab).
+- `components/OrbitalViewer.tsx` — application orchestration, lil-gui,
+  interaction, render loop, and capture lifecycle.
+- `lib/params.ts` — typed user-facing state and URL codec.
+- `lib/presets.ts` — curated preset catalog and application logic.
+- `lib/panels.ts` — preset, superposition, palette, and help overlays.
+- `lib/renderer.ts` — WebGL resources, shader assembly, flow state, and draw
+  passes.
+- `lib/superposition.ts` — term validation, coefficients, and time evolution.
+- `lib/scene.ts`, `lib/cameras.ts` — plane geometry and navigation.
+- `lib/horb.ts`, `lib/palettes.ts`, `lib/color.ts` — assets and perceptual
+  color support.

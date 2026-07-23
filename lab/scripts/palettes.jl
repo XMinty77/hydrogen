@@ -6,21 +6,21 @@
 #   assets/palettes.json          — consumed by the C# and web hosts (uploaded
 #                                   as shader uniforms; interpolation happens
 #                                   in-shader, in OKLab)
-#   gallery/palettes/ramps.png    — comparison sheet: prototype sRGB-lerp vs
+#   gallery/palettes/ramps.png    — comparison sheet: gamma-sRGB lerp vs
 #                                   OKLab-lerp vs lightness-linearized "tuned"
 #                                   variant, each with its measured OKLab
 #                                   lightness profile underneath as grayscale
-#   gallery/palettes/phase.png    — comparison sheet: prototype HSV wheel vs
+#   gallery/palettes/phase.png    — comparison sheet: HSV wheel vs
 #                                   constant-lightness OKLCH wheel, same layout
 #
-# The ramp candidates (all built from the prototype's accretion-disk stops):
-#   accretion        — the stops verbatim; hosts may lerp them in sRGB to
-#                      reproduce the prototype exactly (space = "srgb")
+# The ramp candidates share the canonical accretion-disk stops:
+#   accretion        — the stops verbatim; hosts may lerp them in gamma sRGB
+#                      when `space = "srgb"`
 #   accretion_oklab  — same stops, lerped in OKLab (fixes between-stop sag)
 #   accretion_tuned  — the OKLab path resampled so lightness is *exactly*
 #                      linear in position: equal data steps = equal perceived
 #                      brightness steps (the scientific-viz gold standard),
-#                      while following the original hue/chroma trajectory
+#                      while following the source hue/chroma trajectory
 #
 # Run:  julia --project=lab lab/scripts/palettes.jl
 # =============================================================================
@@ -31,7 +31,7 @@ using PNGFiles
 using Colors: RGB, N0f8
 
 # -----------------------------------------------------------------------------
-# Source stops: the prototype's palette (config.jl CMAP_STOPS), verbatim.
+# Canonical accretion-palette source stops.
 # -----------------------------------------------------------------------------
 const STOPS = [
     (0.00, (0.045, 0.020, 0.075)),   # purple-black (== background)
@@ -66,7 +66,7 @@ function interp_stops(stops, t, lerp)
     return stops[end][2]
 end
 
-"Ramp color at t by lerping the stops in gamma-encoded sRGB (prototype path)."
+"Ramp color at t by lerping the stops in gamma-encoded sRGB."
 ramp_srgb(stops, t) =
     interp_stops(stops, t, (c0, c1, s) -> c0 .+ s .* (c1 .- c0))
 
@@ -79,7 +79,7 @@ end
 # -----------------------------------------------------------------------------
 # The "tuned" variant: exactly-linear lightness.
 #
-# Walk the piecewise-linear OKLab path of the original stops; L is monotone
+# Walk the piecewise-linear OKLab path of the source stops; L is monotone
 # along it (verified below), so for each target lightness we can solve for the
 # path position carrying it, then read hue/chroma there. Resampled to NEW_N
 # evenly spaced stops whose L values are an arithmetic progression.
@@ -175,7 +175,7 @@ function stack(imgs)
     return out
 end
 
-# Ramps sheet: prototype sRGB-lerp / OKLab-lerp / tuned.
+# Ramps sheet: gamma-sRGB lerp / OKLab lerp / lightness-linearized.
 ramps_sheet = stack([
     strip_with_lightness(t -> ramp_srgb(STOPS, t)),
     strip_with_lightness(t -> ramp_oklab(stops_lab, t)),
@@ -183,8 +183,8 @@ ramps_sheet = stack([
 ])
 PNGFiles.save(joinpath(root, "gallery", "palettes", "ramps.png"), ramps_sheet)
 
-# Phase sheet: prototype HSV wheel / constant-lightness OKLCH wheel.
-function hsv_to_rgb(h, s, v)     # h in degrees — the prototype's phase coloring
+# Phase sheet: HSV wheel / constant-lightness OKLCH wheel.
+function hsv_to_rgb(h, s, v)     # h in degrees
     c = v * s
     x = c * (1 - abs(mod(h / 60, 2) - 1))
     m = v - c

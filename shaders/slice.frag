@@ -28,5 +28,6 @@ void main() {
     vec2 psi = evalPsi(p);
     float bright = brightnessOf(psi);
 
-    fragColor = vec4(dither(colorLDR(psi, bright), gl_FragCoord.xy), 1.0);
+    vec3 color = flowBaseColor(colorLDR(psi, bright));
+    fragColor = vec4(dither(color, gl_FragCoord.xy), 1.0);
 }

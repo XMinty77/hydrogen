@@ -1,70 +1,111 @@
 # hydrogen2 — hydrogen wavefunction visualizer
 
-High-fidelity visualizations of the bound-state wavefunctions of atomic hydrogen,
+High-fidelity visualizations of the bound-state wavefunctions of atomic
+hydrogen,
 
     ψ_nlm(r, θ, φ) = R_nl(r) · Y_lm(θ, φ),
 
-the standard analytic solution of the time-independent Schrödinger equation
-(fixed proton, atomic units a₀ = 1) — including **superpositions**
-ψ = Σₖ cₖ ψₖ with real-time evolution e^{−iEₙt}, up to n = 25.
+including superpositions `ψ = Σₖ cₖ ψₖ`, real-time phase evolution
+`e^(−iEₙt)`, and every bound state through `n = 25`. The model uses atomic
+units and a fixed proton.
 
 **Live demo:** https://xminty77.github.io/hydrogen
 
 ## Architecture
 
-One renderer, three delivery modes:
+The project has one baked physics asset and one GLSL renderer shared by the
+interactive and offline hosts.
 
-| Directory  | Language        | Role                                                              |
-|------------|-----------------|-------------------------------------------------------------------|
-| `lab/`     | Julia           | The single physics implementation (FP64/BigFloat). Bakes 1D tables of R_nl and normalized P_lm into a compact binary asset; hosts the numerical-validation harness and palette design. |
-| `shaders/` | GLSL ES 3.00    | The single renderer codebase. Runs unmodified on desktop GL (via `GL_ARB_ES3_compatibility`) and WebGL2. |
-| `export/`  | C# (Silk.NET)   | Offline exports: high-resolution stills and the gallery batch, rendered offscreen on the workstation GPU. Understands web-demo URLs (`dotnet run -- url "<link>"`). |
-| `web/`     | TypeScript      | Interactive demo (Next.js static export) — see `web/README.md`. |
+| Directory | Language | Responsibility |
+|---|---|---|
+| `lab/` | Julia | FP64/BigFloat wavefunction implementation, numerical validation, palette design, and the orbital-table baker. |
+| `shaders/` | GLSL ES 3.00 | Shared slice, volume, path-tracing, refraction, and probability-flow rendering. The sources run in WebGL2 and desktop GL with `GL_ARB_ES3_compatibility`. |
+| `export/` | C# / Silk.NET | Offscreen high-resolution stills, gallery batches, and rendering from compatible web URLs. |
+| `web/` | TypeScript / Next.js | WebGL2 interaction shell, parameter panels, curated presets, URL state, and image capture. See [`web/README.md`](web/README.md). |
 
-**Why 1D tables instead of 3D volumes:** ψ is separable, so the renderer
-reconstructs it exactly from two 1D texture fetches and a `sincos` —
-R_nl(r) · P̄_lm(cosθ) · azimuthal(mφ). Tables are baked in extended precision
-and stored as Float32, confining all numerically delicate work (high-n
-recurrences, factorial normalizations) to bake time. The shaders never do
-anything FP32 can't do accurately, the field has no grid resolution limit, and
-the web demo's assets stay small (n ≤ 25 ⇒ 16 MiB). Superpositions pack each
-term's tables into one row of a 2D texture; the time factor e^{−iEₙt} is
-folded into the per-term complex coefficients on the CPU, so time evolution
-costs the shaders nothing.
+Rather than sampling ψ into a 3-D texture, the renderer reconstructs the
+separable field from one-dimensional radial and angular tables:
 
-## Rendering techniques
+    R_nl(r) · P̄_lm(cos θ) · azimuthal(mφ)
 
-Seven volumetric techniques share one integration/shading library
-(`shaders/common.glsl`): MIP, emission–absorption (the certified default),
-anisotropic ambient multi-scattering, MIDA, emissive isosurfaces (optionally
-lit — Lambert/Blinn–Phong/GGX gated by gradient confidence), progressive
-volumetric path tracing, and eikonal refraction. Every parameter is exposed in
-the web UI and the CLI; the two hosts share the URL/option vocabulary and are
-verified pixel-comparable (≤ 1 LSB).
+The numerically delicate recurrences and normalizations run during the Julia
+bake. The resulting Float32 tables preserve continuous spatial evaluation in
+the shaders without a 3-D grid-resolution limit. Superposition terms occupy
+rows of table textures; the CPU folds each term's coefficient, phase, and
+time factor together before upload.
+
+## Rendering
+
+The analytic density renderer includes:
+
+- 2-D planar slices in real, signed, phase, and palette-relative phase color.
+- MIP, emission–absorption, anisotropic multi-scattering, MIDA, and nested
+  bisection-refined isosurfaces.
+- Optional Lambert, Blinn–Phong, or GGX surface response gated by density
+  gradient confidence.
+- Progressive volumetric path tracing with multiple scattering, a direct
+  light, environments, and thin-lens depth of field.
+- Eikonal integration through a density-derived gradient-index medium.
+- Two exact clip planes, orbit and fly cameras, orientation axes, editable
+  perceptual palettes, dynamic-range compression, supersampled output, and an
+  optional display-referred bloom/color/lens/grain finishing stage.
+
+The web host also visualizes genuine spinless probability current. It
+evaluates
+
+    j = Im(conj(ψ) ∇ψ),       vε = j / (ρ + ε)
+
+directly from the analytic complex field. The node regularizer `ε` controls
+velocity near vanishing density; it does not replace or decorate the current.
+Five active treatments share this transport field:
+
+- `ink`: a persistent semi-Lagrangian dye texture on the selected slice.
+- `motes`, `trails`, and `accretion`: GPU particles with increasingly
+  persistent HDR pathline treatments.
+- `granular`: a persistent 3-D passive-material atlas rendered as a sparse,
+  expectation-preserving stochastic nebula.
+
+Flow seeding, derivative order, integration, time scale, node regularization,
+material dynamics, color meaning, transfer functions, and compositing remain
+independently adjustable. Volume and particle visibility honor clip planes;
+the analytic orbital density remains the spatial support and context.
 
 ## Toolchain
 
-Not on PATH by default on this machine:
+The local tool installations used during development are not necessarily on
+`PATH`:
 
 - Julia 1.12 — `~/.juliaup/bin/julia`
 - .NET SDK 10 — `~/.dotnet/dotnet`
 - Node 26 — `~/.conda/envs/hydrogen/bin/node`
 
-Bake the asset (writes `assets/orbitals.bin`):
+Bake or refresh `assets/orbitals.bin` with:
 
 ```sh
 ~/.juliaup/bin/julia --project=lab -t auto lab/scripts/bake.jl 25
 ```
 
-## Status
+Run the interactive host with:
 
-- [x] Toolchain + scaffold + GL smoke test (ES 3.00 shaders confirmed on desktop GL, offscreen PNG readback works)
-- [x] M1: physics core + validation + baked asset (614 tests; worst FP32 pipeline error 4.25e-6 of state peak)
-- [x] M2: 2D slice renderer + palettes (GPU vs CPU reference ≤ 0.56 LSB; OKLCH ramp + vivid phase wheel, user sign-off)
-- [x] M3: 3D raymarcher (MIP + emission–absorption, exact clip planes)
-- [x] M4: batch still exports (`gallery/stills/index.html`); final resolution pinned at 4096²
-- [x] M5: web demo (`web/`; verified vs CPU reference ≤ 1 LSB)
-- [x] Iteration 5: rendering-technique prototypes (multi-scatter, MIDA, isosurfaces, local illumination, path tracing, eikonal refraction)
-- [x] Iteration 6: superposition + time evolution, n ≤ 25 asset, palette editor, UI overhaul (custom panels, keybinds, capture, auto quality), C# parity incl. URL parsing, refreshed n ≤ 10 gallery with the new modes
-- [ ] Per-technique user feedback → final looks; then the 4096² gallery run
-- [ ] Animations (2D moving cross-sections, 3D orbiting camera, superposition beats)
+```sh
+cd web
+npm install
+npm run dev -- -p 3001
+```
+
+The build synchronizes the asset, palette, and shader sources into the web
+host automatically:
+
+```sh
+cd web
+npm run build
+```
+
+## Validation and exports
+
+The Julia suite covers the analytic wavefunction, table interpolation, and
+Float32 pipeline. Its recorded worst normalized error is `4.25e-6`; rendered
+web/CPU and web/offline comparisons are within one 8-bit LSB. The gallery
+batch is deterministic and uses 2× supersampling followed by Lanczos
+downsampling. See [`docs/gallery-spec.md`](docs/gallery-spec.md) for its
+current image set and camera conventions.

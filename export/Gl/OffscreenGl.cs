@@ -10,7 +10,7 @@
 // Shader assembly contract (mirrored by the web host): a fragment shader is
 // the concatenation  prelude.glsl + common.glsl + <view>.frag  — GLSL ES 3.00
 // throughout, which the desktop NVIDIA driver compiles natively via
-// GL_ARB_ES3_compatibility (verified in the M0 smoke test).
+// GL_ARB_ES3_compatibility.
 // =============================================================================
 
 using Silk.NET.Maths;

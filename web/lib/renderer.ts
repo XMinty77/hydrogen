@@ -8,12 +8,6 @@
 // are bit-comparable with the offline C# host), same uniform semantics
 // (documented once, in shaders/common.glsl + the view shaders).
 //
-// Iteration 5 adds two more view programs — pathtrace.frag (progressive
-// Monte Carlo, resolved by display.frag from an RGBA32F accumulation
-// ping-pong) and eikonal.frag (refractive rendering) — on the same contract.
-// The C# host has not grown these yet (web-first prototyping round); nothing
-// here changes what it compiles.
-//
 // The heavy lifting (program introspection, uniform type dispatch, texture
 // creation) is delegated to twgl; this file only encodes the project's
 // contracts.
@@ -71,6 +65,9 @@ export interface CommonParams {
   phaseL: number;
   phaseC: number;
   phaseH0Rad: number;
+  /** Dim the analytic base while an advected flow layer is visible. */
+  flowOverlayEnabled: boolean;
+  flowBase: number;
 }
 
 export interface SliceParams {
@@ -126,7 +123,7 @@ export interface VolumeParams {
   shade: ShadeParams;
   /** 0 MIP, 1 EA, 2 ambient multi-scatter, 3 MIDA, 4 isosurfaces. */
   integrator: number;
-  /** Isosurfaces only: use the original (pre-palette-mapped) shell shading. */
+  /** Isosurfaces only: use self-emissive rather than palette-mapped shading. */
   isoLegacy: boolean;
   steps: number;
   densityScale: number;
@@ -152,6 +149,122 @@ export interface VolumeParams {
   isoEmission: number;
   isoRim: number;
   isoAmbient: number;
+}
+
+/** Physical and numerical controls shared by every genuine-flow solver. */
+export interface FlowFieldParams {
+  /** 0 second-order central differences, 1 fourth-order central differences. */
+  derivative: number;
+  derivativeDelta: number;
+  /** Regularizer in multiples of q999: v = j / (rho + epsilon*q999). */
+  nodeEps: number;
+  /** Atomic units represented per wall-clock second. */
+  timeScale: number;
+  /** Safety cap in domain radii per wall-clock second. */
+  maxSpeed: number;
+  reverse: boolean;
+  /** 0 Euler, 1 midpoint/RK2. */
+  integrator: number;
+  substeps: number;
+  /** 0 Born-density, 1 current-flux, 2 uniform-volume seeding. */
+  seedMode: number;
+  seedPower: number;
+  spawnTries: number;
+  seedInsideClips: boolean;
+  resetNonce: number;
+}
+
+/** Persistent 3-D tracer ensemble + temporal HDR trail treatment. */
+export interface FlowParticleParams {
+  common: CommonParams;
+  camera: CameraParams;
+  field: FlowFieldParams;
+  dt: number;
+  particleSide: number;
+  lifetime: number;
+  streakLength: number;
+  speedStretch: number;
+  widthPx: number;
+  halo: number;
+  haloGain: number;
+  tailPower: number;
+  headBoost: number;
+  opacity: number;
+  trailHalfLife: number;
+  trailDiffusion: number;
+  emission: number;
+  compositeOpacity: number;
+  /** 0 additive, 1 screen, 2 premultiplied-alpha. */
+  compositeMode: number;
+  /** 0 palette-speed, 1 palette material-coordinate, 2 wavefunction phase. */
+  colorMode: number;
+  colorGain: number;
+  colorFloor: number;
+  /** Exponent of the local rho/q999 visibility gate; 0 disables it. */
+  densityGate: number;
+  clipVisible: boolean;
+}
+
+/** Semi-Lagrangian dye advection on the active 2-D slice. */
+export interface FlowInkParams {
+  common: CommonParams;
+  field: FlowFieldParams;
+  dt: number;
+  origin: Vec3;
+  axisU: Vec3;
+  axisV: Vec3;
+  colorMode: number;
+  colorGain: number;
+  colorFloor: number;
+  densityGate: number;
+  noiseScale: number;
+  decay: number;
+  injection: number;
+  diffusion: number;
+  throughFade: number;
+  contrast: number;
+  opacity: number;
+}
+
+/** Persistent world-space dye atlas plus its volumetric presentation. The
+ * orbital rho is still evaluated analytically in the resolve; only this
+ * passive material is advected through the probability transport velocity. */
+export interface FlowVolumeParams {
+  common: CommonParams;
+  camera: CameraParams;
+  field: FlowFieldParams;
+  dt: number;
+  /** Cubic voxel count; the z slices are packed into a square-ish 2-D atlas. */
+  grid: number;
+  steps: number;
+  noiseScale: number;
+  noiseOctaves: number;
+  lacunarity: number;
+  persistence: number;
+  noiseContrast: number;
+  decay: number;
+  injection: number;
+  diffusion: number;
+  /** Bounded MacCormack anti-diffusion: 0 plain semi-Lagrangian, 1 full. */
+  correction: number;
+  signalGain: number;
+  signalPow: number;
+  threshold: number;
+  softness: number;
+  extinction: number;
+  emission: number;
+  opacity: number;
+  ditherAmount: number;
+  ditherScale: number;
+  ditherRate: number;
+  ditherCoverage: number;
+  rayJitter: number;
+  colorMode: number;
+  colorGain: number;
+  colorFloor: number;
+  densityGate: number;
+  /** 0 additive, 1 screen, 2 premultiplied-alpha. */
+  compositeMode: number;
 }
 
 export interface PathtraceParams {
@@ -192,6 +305,38 @@ export interface EikonalParams {
   gradDelta: number;
 }
 
+/** Display-referred finishing applied to the completed analytic + flow scene. */
+export interface PostProcessParams {
+  bloomEnabled: boolean;
+  bloomThreshold: number;
+  bloomKnee: number;
+  bloomIntensity: number;
+  bloomRadius: number;
+  bloomIterations: number;
+  bloomScale: number;
+  bloomSaturation: number;
+  bloomTint: Vec3;
+  /** 0 screen, 1 additive. */
+  bloomComposite: number;
+  exposure: number;
+  contrast: number;
+  saturation: number;
+  vibrance: number;
+  aberrationPx: number;
+  aberrationFalloff: number;
+  vignetteEnabled: boolean;
+  vignetteAmount: number;
+  vignetteRadius: number;
+  vignetteSoftness: number;
+  vignetteRoundness: number;
+  vignetteCenter: [number, number];
+  grainEnabled: boolean;
+  grainAmount: number;
+  grainScale: number;
+  grainTime: number;
+  grainColored: boolean;
+}
+
 const MAX_STOPS = 8;
 
 async function fetchText(url: string): Promise<string> {
@@ -227,6 +372,48 @@ export class OrbitalRenderer {
   private accumRead = 0; // index of the buffer currently holding the sum
   private accumFrames = 0; // passes since the last reset
   private accumSamples = 0; // total samples per pixel accumulated
+
+  // Genuine probability-flow state. Particle positions use one RGBA32F
+  // position/age target; velocity comes from ping-pong displacement, avoiding
+  // float MRTs that some WebGL2 implementations reject. Its HDR trail and the
+  // 2-D ink field are independent ping-pong buffers. Camera edits clear only the
+  // screen-space trail, while field edits may explicitly reseed the ensemble.
+  private flowStateFbi: [twgl.FramebufferInfo, twgl.FramebufferInfo] | null = null;
+  private flowStateSide = 0;
+  private flowStateRead = 0;
+  private flowStateReset = true;
+  private flowFrame = 0;
+  private flowTrailFbi: [twgl.FramebufferInfo, twgl.FramebufferInfo] | null = null;
+  private flowTrailW = 0;
+  private flowTrailH = 0;
+  private flowTrailRead = 0;
+  private flowTrailReset = true;
+  private flowInkFbi: [twgl.FramebufferInfo, twgl.FramebufferInfo] | null = null;
+  private flowInkW = 0;
+  private flowInkH = 0;
+  private flowInkRead = 0;
+  private flowInkReset = true;
+  private flowVolumeFbi: [
+    twgl.FramebufferInfo, twgl.FramebufferInfo, twgl.FramebufferInfo,
+  ] | null = null;
+  private flowVolumeGrid = 0;
+  private flowVolumeTilesX = 0;
+  private flowVolumeTilesY = 0;
+  private flowVolumeRead = 0;
+  private flowVolumeReset = true;
+  private flowVolumeFrame = 0;
+
+  // Optional display-referred finishing. Analytic and flow passes target the
+  // full-resolution scene texture while enabled; bloom uses a separately
+  // scalable ping-pong pair before the final composite resolves to the canvas.
+  private presentationTarget: twgl.FramebufferInfo | null = null;
+  private postSceneFbi: twgl.FramebufferInfo | null = null;
+  private postSceneW = 0;
+  private postSceneH = 0;
+  private postBloomFbi: [twgl.FramebufferInfo, twgl.FramebufferInfo] | null = null;
+  private postBloomW = 0;
+  private postBloomH = 0;
+
   /** True when RGBA32F render targets are supported (EXT_color_buffer_float). */
   readonly floatRenderable: boolean;
 
@@ -240,6 +427,18 @@ export class OrbitalRenderer {
     private readonly eikonalPi: twgl.ProgramInfo,
     private readonly displayPi: twgl.ProgramInfo,
     private readonly axesPi: twgl.ProgramInfo,
+    private readonly flowUpdatePi: twgl.ProgramInfo,
+    private readonly flowParticlesPi: twgl.ProgramInfo,
+    private readonly flowDecayPi: twgl.ProgramInfo,
+    private readonly flowCompositePi: twgl.ProgramInfo,
+    private readonly flowInkUpdatePi: twgl.ProgramInfo,
+    private readonly flowInkDisplayPi: twgl.ProgramInfo,
+    private readonly flowVolumeUpdatePi: twgl.ProgramInfo,
+    private readonly flowVolumeCorrectPi: twgl.ProgramInfo,
+    private readonly flowVolumeRenderPi: twgl.ProgramInfo,
+    private readonly postBloomExtractPi: twgl.ProgramInfo,
+    private readonly postBloomBlurPi: twgl.ProgramInfo,
+    private readonly postCompositePi: twgl.ProgramInfo,
   ) {
     this.phaseCmaxTex = this.createTableTexture(palettes.phaseCmax);
     this.floatRenderable = gl.getExtension("EXT_color_buffer_float") !== null;
@@ -262,8 +461,24 @@ export class OrbitalRenderer {
       "eikonal.frag",
       "display.frag",
       "axes.frag",
+      "flow_update.frag",
+      "flow_particles.vert",
+      "flow_particles.frag",
+      "flow_decay.frag",
+      "flow_composite.frag",
+      "flow_ink_update.frag",
+      "flow_ink_display.frag",
+      "flow_volume_update.frag",
+      "flow_volume_correct.frag",
+      "flow_volume_render.frag",
+      "post_bloom_extract.frag",
+      "post_bloom_blur.frag",
+      "post_composite.frag",
     ];
-    const [vert, prelude, common, slice, volume, pathtrace, eikonal, display, axes] =
+    const [vert, prelude, common, slice, volume, pathtrace, eikonal, display, axes,
+      flowUpdate, flowParticlesVert, flowParticles, flowDecay, flowComposite,
+      flowInkUpdate, flowInkDisplay, flowVolumeUpdate, flowVolumeCorrect,
+      flowVolumeRender, postBloomExtract, postBloomBlur, postComposite] =
       await Promise.all(files.map((f) => fetchText(`${shaderBase}/${f}`)));
     // View shaders share prelude + common; the axes overlay needs neither the
     // ψ machinery nor common's uniforms, so it compiles against prelude alone.
@@ -283,6 +498,18 @@ export class OrbitalRenderer {
       compile(eikonal),
       compile(display),
       compile(axes, false),
+      compile(flowUpdate),
+      twgl.createProgramInfo(gl, [flowParticlesVert, prelude + common + flowParticles]),
+      compile(flowDecay, false),
+      compile(flowComposite),
+      compile(flowInkUpdate),
+      compile(flowInkDisplay),
+      compile(flowVolumeUpdate),
+      compile(flowVolumeCorrect),
+      compile(flowVolumeRender),
+      compile(postBloomExtract, false),
+      compile(postBloomBlur, false),
+      compile(postComposite, false),
     );
   }
 
@@ -430,6 +657,27 @@ export class OrbitalRenderer {
       uOkPhaseSigned: p.okPhaseSigned ? 1 : 0,
       uDitherAmp: p.dither ? 1 / 255 : 0,
       uColorMode: p.colorMode,
+      uFlowOverlayEnabled: p.flowOverlayEnabled ? 1 : 0,
+      uFlowBase: p.flowBase,
+    };
+  }
+
+  /** Uniform bridge for every advected solver. */
+  private flowFieldUniforms(p: FlowFieldParams): Record<string, unknown> {
+    return {
+      uCurrentDerivative: p.derivative,
+      uCurrentDelta: p.derivativeDelta,
+      uCurrentNodeEps: p.nodeEps,
+      uFlowTimeScale: p.timeScale,
+      uFlowMaxSpeed: p.maxSpeed,
+      uFlowReverse: p.reverse ? 1 : 0,
+      uFlowIntegrator: p.integrator,
+      uFlowSubsteps: p.substeps,
+      uFlowSeedMode: p.seedMode,
+      uFlowSeedPower: p.seedPower,
+      uFlowSpawnTries: p.spawnTries,
+      uFlowSeedInsideClips: p.seedInsideClips ? 1 : 0,
+      uFlowResetNonce: p.resetNonce,
     };
   }
 
@@ -454,13 +702,299 @@ export class OrbitalRenderer {
   private draw(
     pi: twgl.ProgramInfo,
     uniforms: Record<string, unknown>,
-    fb: twgl.FramebufferInfo | null = null,
+    fb?: twgl.FramebufferInfo | null,
   ) {
     const gl = this.gl;
-    twgl.bindFramebufferInfo(gl, fb); // null ⇒ canvas + full viewport
+    const target = fb === undefined ? this.presentationTarget : fb;
+    twgl.bindFramebufferInfo(gl, target); // null ⇒ canvas + full viewport
+    // Be explicit: after atlas work some twgl/WebGL combinations restore the
+    // default framebuffer but retain the atlas viewport, shrinking the next
+    // base render into its lower-left corner.
+    gl.viewport(0, 0,
+      target ? target.width : gl.drawingBufferWidth,
+      target ? target.height : gl.drawingBufferHeight);
+    // twgl sets drawBuffers only when an FBO is created, not when one is
+    // rebound. We switch between a two-target particle MRT, one-target HDR
+    // buffers, and the default framebuffer every frame, so restore the exact
+    // attachment list explicitly (ANGLE/SwiftShader otherwise rejects the
+    // subsequent canvas draw and leaves its undefined white clear).
+    gl.drawBuffers(target
+      ? target.attachments.map((_, i) => gl.COLOR_ATTACHMENT0 + i)
+      : [gl.BACK]);
     gl.useProgram(pi.program);
     twgl.setUniforms(pi, uniforms);
     gl.drawArrays(gl.TRIANGLES, 0, 3); // fullscreen.vert needs no buffers
+  }
+
+  private deleteFramebufferInfo(fbi: twgl.FramebufferInfo) {
+    const gl = this.gl;
+    // Every flow attachment is explicitly texture-backed (including both MRT
+    // state planes); no depth/renderbuffer attachments are created here.
+    for (const attachment of fbi.attachments)
+      gl.deleteTexture(attachment as WebGLTexture);
+    gl.deleteFramebuffer(fbi.framebuffer);
+  }
+
+  private deleteFramebufferPair(pair: readonly twgl.FramebufferInfo[] | null) {
+    if (!pair) return;
+    pair.forEach((fbi) => this.deleteFramebufferInfo(fbi));
+  }
+
+  private clearFramebufferPair(pair: readonly twgl.FramebufferInfo[]) {
+    const gl = this.gl;
+    for (const fbi of pair) {
+      twgl.bindFramebufferInfo(gl, fbi);
+      gl.drawBuffers(fbi.attachments.map((_, i) => gl.COLOR_ATTACHMENT0 + i));
+      const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+      if (status !== gl.FRAMEBUFFER_COMPLETE)
+        throw new Error(`incomplete flow framebuffer 0x${status.toString(16)}`);
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+    }
+  }
+
+  private postAttachment() {
+    const gl = this.gl;
+    return {
+      internalFormat: gl.RGBA8,
+      format: gl.RGBA,
+      type: gl.UNSIGNED_BYTE,
+      min: gl.LINEAR,
+      mag: gl.LINEAR,
+      wrap: gl.CLAMP_TO_EDGE,
+    };
+  }
+
+  private ensurePostScene(w: number, h: number) {
+    if (this.postSceneFbi && w === this.postSceneW && h === this.postSceneH) return;
+    if (this.postSceneFbi) this.deleteFramebufferInfo(this.postSceneFbi);
+    this.postSceneFbi = twgl.createFramebufferInfo(
+      this.gl, [this.postAttachment()], w, h,
+    );
+    this.postSceneW = w;
+    this.postSceneH = h;
+  }
+
+  private ensurePostBloom(w: number, h: number, scale: number) {
+    const bw = Math.max(1, Math.round(w * Math.max(0.125, Math.min(1, scale))));
+    const bh = Math.max(1, Math.round(h * Math.max(0.125, Math.min(1, scale))));
+    if (this.postBloomFbi && bw === this.postBloomW && bh === this.postBloomH) return;
+    this.deleteFramebufferPair(this.postBloomFbi);
+    this.postBloomFbi = [
+      twgl.createFramebufferInfo(this.gl, [this.postAttachment()], bw, bh),
+      twgl.createFramebufferInfo(this.gl, [this.postAttachment()], bw, bh),
+    ];
+    this.postBloomW = bw;
+    this.postBloomH = bh;
+  }
+
+  /** Redirect subsequent canvas-bound passes into a full-resolution scene
+   * texture. Explicit simulation/accumulation FBO draws remain untouched. */
+  beginPresentation(enabled: boolean) {
+    if (!enabled) {
+      this.presentationTarget = null;
+      return;
+    }
+    this.ensurePostScene(this.gl.drawingBufferWidth, this.gl.drawingBufferHeight);
+    this.presentationTarget = this.postSceneFbi;
+  }
+
+  /** Bloom and grade the completed scene, then resolve it to the canvas.
+   * Measurement overlays such as orientation axes should be drawn afterwards
+   * so they remain crisp and do not contaminate bloom. */
+  finishPresentation(p: PostProcessParams) {
+    const scene = this.postSceneFbi;
+    if (!scene || this.presentationTarget !== scene) return;
+    const gl = this.gl;
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    let bloomTexture = scene.attachments[0];
+
+    if (p.bloomEnabled && p.bloomIntensity > 0) {
+      this.ensurePostBloom(w, h, p.bloomScale);
+      const [a, b] = this.postBloomFbi!;
+      this.draw(this.postBloomExtractPi, {
+        uScene: scene.attachments[0],
+        uThreshold: p.bloomThreshold,
+        uKnee: p.bloomKnee,
+        uSaturation: p.bloomSaturation,
+        uTint: p.bloomTint,
+      }, a);
+      const iterations = Math.max(1, Math.min(8, Math.round(p.bloomIterations)));
+      const radius = Math.max(0.05, p.bloomRadius);
+      for (let i = 0; i < iterations; i++) {
+        this.draw(this.postBloomBlurPi, {
+          uSource: a.attachments[0],
+          uDirection: [radius / a.width, 0],
+        }, b);
+        this.draw(this.postBloomBlurPi, {
+          uSource: b.attachments[0],
+          uDirection: [0, radius / a.height],
+        }, a);
+      }
+      bloomTexture = a.attachments[0];
+    }
+
+    // Explicit null bypasses presentationTarget and resolves to the canvas.
+    this.draw(this.postCompositePi, {
+      uScene: scene.attachments[0],
+      uBloom: bloomTexture,
+      uResolution: [w, h],
+      uBloomIntensity: p.bloomEnabled ? p.bloomIntensity : 0,
+      uBloomComposite: p.bloomComposite,
+      uPostExposure: p.exposure,
+      uPostContrast: p.contrast,
+      uPostSaturation: p.saturation,
+      uPostVibrance: p.vibrance,
+      uAberrationPx: p.aberrationPx,
+      uAberrationFalloff: p.aberrationFalloff,
+      uVignetteEnabled: p.vignetteEnabled ? 1 : 0,
+      uVignetteAmount: p.vignetteAmount,
+      uVignetteRadius: p.vignetteRadius,
+      uVignetteSoftness: p.vignetteSoftness,
+      uVignetteRoundness: p.vignetteRoundness,
+      uVignetteCenter: p.vignetteCenter,
+      uGrainEnabled: p.grainEnabled ? 1 : 0,
+      uGrainAmount: p.grainAmount,
+      uGrainScale: p.grainScale,
+      uGrainTime: p.grainTime,
+      uGrainColored: p.grainColored ? 1 : 0,
+    }, null);
+    this.presentationTarget = null;
+  }
+
+  private ensureFlowState(side: number) {
+    side = Math.max(8, Math.round(side));
+    if (this.flowStateFbi && side === this.flowStateSide) return;
+    this.deleteFramebufferPair(this.flowStateFbi);
+    const gl = this.gl;
+    const attachment = () => ({
+      internalFormat: gl.RGBA32F,
+      format: gl.RGBA,
+      type: gl.FLOAT,
+      min: gl.NEAREST,
+      mag: gl.NEAREST,
+      wrap: gl.CLAMP_TO_EDGE,
+    });
+    this.flowStateFbi = [
+      twgl.createFramebufferInfo(gl, [attachment()], side, side),
+      twgl.createFramebufferInfo(gl, [attachment()], side, side),
+    ];
+    this.flowStateSide = side;
+    this.flowStateRead = 0;
+    this.flowStateReset = true;
+    this.flowFrame = 0;
+    this.clearFramebufferPair(this.flowStateFbi);
+  }
+
+  private ensureFlowTrail(w: number, h: number) {
+    if (this.flowTrailFbi && w === this.flowTrailW && h === this.flowTrailH) return;
+    this.deleteFramebufferPair(this.flowTrailFbi);
+    const gl = this.gl;
+    const attachment = [{
+      internalFormat: gl.RGBA16F,
+      format: gl.RGBA,
+      type: gl.HALF_FLOAT,
+      min: gl.LINEAR,
+      mag: gl.LINEAR,
+      wrap: gl.CLAMP_TO_EDGE,
+    }];
+    this.flowTrailFbi = [
+      twgl.createFramebufferInfo(gl, attachment, w, h),
+      twgl.createFramebufferInfo(gl, attachment, w, h),
+    ];
+    this.flowTrailW = w;
+    this.flowTrailH = h;
+    this.flowTrailRead = 0;
+    this.flowTrailReset = true;
+    this.clearFramebufferPair(this.flowTrailFbi);
+  }
+
+  private ensureFlowInk(w: number, h: number) {
+    if (this.flowInkFbi && w === this.flowInkW && h === this.flowInkH) return;
+    this.deleteFramebufferPair(this.flowInkFbi);
+    const gl = this.gl;
+    // Dye is a bounded scalar; RGBA8 gives bilinear advection everywhere and
+    // avoids making the slice method depend on float-linear filtering.
+    const attachment = [{
+      internalFormat: gl.RGBA8,
+      format: gl.RGBA,
+      type: gl.UNSIGNED_BYTE,
+      min: gl.LINEAR,
+      mag: gl.LINEAR,
+      wrap: gl.CLAMP_TO_EDGE,
+    }];
+    this.flowInkFbi = [
+      twgl.createFramebufferInfo(gl, attachment, w, h),
+      twgl.createFramebufferInfo(gl, attachment, w, h),
+    ];
+    this.flowInkW = w;
+    this.flowInkH = h;
+    this.flowInkRead = 0;
+    this.flowInkReset = true;
+    this.clearFramebufferPair(this.flowInkFbi);
+  }
+
+  private ensureFlowVolume(grid: number) {
+    const gl = this.gl;
+    const maxTexture = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
+    grid = Math.max(12, Math.round(grid));
+    let tilesX = Math.ceil(Math.sqrt(grid));
+    let tilesY = Math.ceil(grid / tilesX);
+    // The UI stays far below this on normal hardware, but clamp defensively so
+    // a hand-authored URL cannot request an incomplete atlas framebuffer.
+    while ((tilesX * grid > maxTexture || tilesY * grid > maxTexture) && grid > 12) {
+      grid -= 1;
+      tilesX = Math.ceil(Math.sqrt(grid));
+      tilesY = Math.ceil(grid / tilesX);
+    }
+    if (this.flowVolumeFbi && grid === this.flowVolumeGrid) return;
+    this.deleteFramebufferPair(this.flowVolumeFbi);
+    const attachment = [{
+      internalFormat: gl.RGBA8,
+      format: gl.RGBA,
+      type: gl.UNSIGNED_BYTE,
+      min: gl.LINEAR,
+      mag: gl.LINEAR,
+      wrap: gl.CLAMP_TO_EDGE,
+    }];
+    const w = tilesX * grid;
+    const h = tilesY * grid;
+    this.flowVolumeFbi = [
+      twgl.createFramebufferInfo(gl, attachment, w, h),
+      twgl.createFramebufferInfo(gl, attachment, w, h),
+      twgl.createFramebufferInfo(gl, attachment, w, h),
+    ];
+    this.flowVolumeGrid = grid;
+    this.flowVolumeTilesX = tilesX;
+    this.flowVolumeTilesY = tilesY;
+    this.flowVolumeRead = 0;
+    this.flowVolumeReset = true;
+    this.flowVolumeFrame = 0;
+    this.clearFramebufferPair(this.flowVolumeFbi);
+  }
+
+  /** Reseed tracer positions (field/seed topology changed). */
+  resetFlowParticles() {
+    this.flowStateReset = true;
+    this.flowFrame = 0;
+    this.resetFlowTrails();
+  }
+
+  /** Clear only screen-space persistence (camera, clip, or appearance changed). */
+  resetFlowTrails() {
+    this.flowTrailReset = true;
+  }
+
+  /** Clear/reseed the advected slice dye (plane or field changed). */
+  resetFlowInk() {
+    this.flowInkReset = true;
+  }
+
+  /** Clear/reseed the camera-independent 3-D passive material. */
+  resetFlowVolume() {
+    this.flowVolumeReset = true;
+    this.flowVolumeFrame = 0;
   }
 
   renderSlice(p: SliceParams) {
@@ -470,6 +1004,262 @@ export class OrbitalRenderer {
       uAxisU: p.axisU,
       uAxisV: p.axisV,
     });
+  }
+
+  /** Advance the persistent 3-D ensemble and deposit it into the HDR trail.
+   * This deliberately runs before the canvas/base pass: some WebGL drivers
+   * invalidate default-framebuffer contents when offscreen work follows it. */
+  advanceFlowParticles(p: FlowParticleParams) {
+    const gl = this.gl;
+    if (!this.floatRenderable)
+      throw new Error("advected 3-D flow needs EXT_color_buffer_float");
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    this.ensureFlowState(p.particleSide);
+    this.ensureFlowTrail(w, h);
+
+    const states = this.flowStateFbi!;
+    const stateRead = states[this.flowStateRead];
+    const stateWrite = states[1 - this.flowStateRead];
+    this.draw(this.flowUpdatePi, {
+      ...this.commonUniforms(p.common),
+      ...this.cameraUniforms(p.camera, w / h),
+      ...this.flowFieldUniforms(p.field),
+      uFlowPositionAge: stateRead.attachments[0],
+      uFlowReset: this.flowStateReset ? 1 : 0,
+      uFlowFrame: this.flowFrame,
+      uFlowDt: p.dt,
+      uFlowLifetime: p.lifetime,
+    }, stateWrite);
+    const stateWasReset = this.flowStateReset;
+    this.flowStateRead = 1 - this.flowStateRead;
+    this.flowStateReset = false;
+    this.flowFrame += 1;
+    const state = states[this.flowStateRead];
+
+    const trailWasReset = this.flowTrailReset;
+    if (trailWasReset) {
+      this.clearFramebufferPair(this.flowTrailFbi!);
+      this.flowTrailReset = false;
+    }
+    const trails = this.flowTrailFbi!;
+    const trailRead = trails[this.flowTrailRead];
+    const trailWrite = trails[1 - this.flowTrailRead];
+    const retention = p.trailHalfLife <= 0 || p.dt <= 0
+      ? (p.dt <= 0 ? 1 : 0)
+      : Math.pow(0.5, p.dt / p.trailHalfLife);
+    this.draw(this.flowDecayPi, {
+      uFlowTrail: trailRead.attachments[0],
+      uFlowTexel: [1 / w, 1 / h],
+      uFlowRetention: retention,
+      uFlowTrailDiffusion: p.trailDiffusion,
+    }, trailWrite);
+    this.flowTrailRead = 1 - this.flowTrailRead;
+
+    // Deposit one camera-facing ribbon per particle into the just-decayed HDR
+    // buffer. Additive accumulation preserves overlapping filament radiance.
+    // Pausing freezes the buffer instead of brightening it every display frame;
+    // after a reset we still deposit once so a paused ensemble remains visible.
+    const target = trails[this.flowTrailRead];
+    if (p.dt > 0 || stateWasReset || trailWasReset) {
+      twgl.bindFramebufferInfo(gl, target);
+      gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+      gl.useProgram(this.flowParticlesPi.program);
+      twgl.setUniforms(this.flowParticlesPi, {
+        ...this.commonUniforms(p.common),
+        ...this.cameraUniforms(p.camera, w / h),
+        uFlowPositionAge: state.attachments[0],
+        uFlowPreviousPositionAge: stateRead.attachments[0],
+        uFlowParticleSide: this.flowStateSide,
+        uResolution: [w, h],
+        uFlowLifetime: p.lifetime,
+        uFlowDt: stateWasReset ? 0 : p.dt,
+        uFlowMaxSpeed: p.field.maxSpeed,
+        uFlowStreakLength: p.streakLength,
+        uFlowSpeedStretch: p.speedStretch,
+        uFlowWidthPx: p.widthPx,
+        uFlowHalo: p.halo,
+        uFlowHaloGain: p.haloGain,
+        uFlowTailPower: p.tailPower,
+        uFlowHeadBoost: p.headBoost,
+        uFlowOpacity: p.opacity,
+        uFlowColorMode: p.colorMode,
+        uFlowColorGain: p.colorGain,
+        uFlowColorFloor: p.colorFloor,
+        uFlowDensityGate: p.densityGate,
+        uFlowClipVisible: p.clipVisible ? 1 : 0,
+      });
+      gl.enable(gl.BLEND);
+      gl.blendEquation(gl.FUNC_ADD);
+      gl.blendFunc(gl.ONE, gl.ONE);
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.flowStateSide * this.flowStateSide);
+      gl.disable(gl.BLEND);
+    }
+
+  }
+
+  /** Resolve the already-advanced HDR particle trail over a completed base
+   * render. Call after the volume/pathtrace/eikonal pass and before axes. */
+  compositeFlowParticles(p: FlowParticleParams) {
+    if (!this.flowTrailFbi || p.compositeOpacity <= 0 || p.emission <= 0) return;
+    const gl = this.gl;
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    const target = this.flowTrailFbi[this.flowTrailRead];
+    if (p.compositeMode === 0) gl.blendFunc(gl.ONE, gl.ONE);
+    else if (p.compositeMode === 1) gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_COLOR);
+    else gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.enable(gl.BLEND);
+    this.draw(this.flowCompositePi, {
+      ...this.commonUniforms(p.common),
+      ...this.cameraUniforms(p.camera, w / h),
+      uFlowTrail: target.attachments[0],
+      uFlowEmission: p.emission,
+      uFlowCompositeOpacity: p.compositeOpacity,
+      uFlowCompositeMode: p.compositeMode,
+    });
+    gl.disable(gl.BLEND);
+  }
+
+  /** One semi-Lagrangian step of slice dye, then a palette-mapped overlay. */
+  renderFlowInk(p: FlowInkParams) {
+    const gl = this.gl;
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    this.ensureFlowInk(w, h);
+    const pair = this.flowInkFbi!;
+    const read = pair[this.flowInkRead];
+    const write = pair[1 - this.flowInkRead];
+    this.draw(this.flowInkUpdatePi, {
+      ...this.commonUniforms(p.common),
+      ...this.flowFieldUniforms(p.field),
+      uFlowInkPrevious: read.attachments[0],
+      uFlowInkTexel: [1 / w, 1 / h],
+      uOrigin: p.origin,
+      uAxisU: p.axisU,
+      uAxisV: p.axisV,
+      uFlowReset: this.flowInkReset ? 1 : 0,
+      uFlowDt: p.dt,
+      uFlowInkScale: p.noiseScale,
+      uFlowInkDecay: p.decay,
+      uFlowInkInjection: p.injection,
+      uFlowInkDiffusion: p.diffusion,
+      uFlowInkThroughFade: p.throughFade,
+    }, write);
+    this.flowInkRead = 1 - this.flowInkRead;
+    this.flowInkReset = false;
+
+    gl.enable(gl.BLEND);
+    gl.blendEquation(gl.FUNC_ADD);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    this.draw(this.flowInkDisplayPi, {
+      ...this.commonUniforms(p.common),
+      ...this.flowFieldUniforms(p.field),
+      uFlowInk: write.attachments[0],
+      uOrigin: p.origin,
+      uAxisU: p.axisU,
+      uAxisV: p.axisV,
+      uFlowColorMode: p.colorMode,
+      uFlowColorGain: p.colorGain,
+      uFlowColorFloor: p.colorFloor,
+      uFlowDensityGate: p.densityGate,
+      uFlowInkContrast: p.contrast,
+      uFlowInkOpacity: p.opacity,
+    });
+    gl.disable(gl.BLEND);
+  }
+
+  /** Advance the world-space dye before the canvas/base pass. RGBA8 makes this
+   * technique available even when float render targets are absent. */
+  advanceFlowVolume(p: FlowVolumeParams) {
+    this.ensureFlowVolume(p.grid);
+    if (!this.flowVolumeReset && p.dt <= 0) return;
+    const states = this.flowVolumeFbi!;
+    const originalIndex = this.flowVolumeRead;
+    const predictorIndex = (originalIndex + 1) % 3;
+    const finalIndex = (originalIndex + 2) % 3;
+    const original = states[originalIndex];
+    const predictor = states[predictorIndex];
+    this.draw(this.flowVolumeUpdatePi, {
+      ...this.commonUniforms(p.common),
+      ...this.cameraUniforms(p.camera, 1),
+      ...this.flowFieldUniforms(p.field),
+      uFlowVolumePrevious: original.attachments[0],
+      uFlowVolumeGrid: this.flowVolumeGrid,
+      uFlowVolumeTilesX: this.flowVolumeTilesX,
+      uFlowVolumeTilesY: this.flowVolumeTilesY,
+      uFlowReset: this.flowVolumeReset ? 1 : 0,
+      uFlowDt: p.dt,
+      uFlowVolumeNoiseScale: p.noiseScale,
+      uFlowVolumeNoiseOctaves: p.noiseOctaves,
+      uFlowVolumeLacunarity: p.lacunarity,
+      uFlowVolumePersistence: p.persistence,
+      uFlowVolumeNoiseContrast: p.noiseContrast,
+      uFlowVolumeDecay: p.decay,
+      uFlowVolumeInjection: p.injection,
+      uFlowVolumeDiffusion: p.diffusion,
+    }, predictor);
+    if (!this.flowVolumeReset && p.correction > 0 && p.dt > 0) {
+      this.draw(this.flowVolumeCorrectPi, {
+        ...this.commonUniforms(p.common),
+        ...this.cameraUniforms(p.camera, 1),
+        ...this.flowFieldUniforms(p.field),
+        uFlowVolumeOriginal: original.attachments[0],
+        uFlowVolumePredictor: predictor.attachments[0],
+        uFlowVolumeGrid: this.flowVolumeGrid,
+        uFlowVolumeTilesX: this.flowVolumeTilesX,
+        uFlowVolumeTilesY: this.flowVolumeTilesY,
+        uFlowDt: p.dt,
+        uFlowVolumeCorrection: p.correction,
+      }, states[finalIndex]);
+      this.flowVolumeRead = finalIndex;
+    } else {
+      this.flowVolumeRead = predictorIndex;
+    }
+    this.flowVolumeReset = false;
+    this.flowVolumeFrame += 1;
+  }
+
+  /** Raymarch the persistent dye over a completed base volume. */
+  compositeFlowVolume(p: FlowVolumeParams) {
+    if (!this.flowVolumeFbi) return;
+    if (p.opacity <= 0 || p.emission <= 0) return;
+    const gl = this.gl;
+    if (p.compositeMode === 0) gl.blendFunc(gl.ONE, gl.ONE);
+    else if (p.compositeMode === 1) gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_COLOR);
+    else gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.enable(gl.BLEND);
+    const state = this.flowVolumeFbi[this.flowVolumeRead];
+    this.draw(this.flowVolumeRenderPi, {
+      ...this.commonUniforms(p.common),
+      ...this.cameraUniforms(
+        p.camera,
+        gl.drawingBufferWidth / gl.drawingBufferHeight,
+      ),
+      uFlowVolume: state.attachments[0],
+      uFlowVolumeGrid: this.flowVolumeGrid,
+      uFlowVolumeTilesX: this.flowVolumeTilesX,
+      uFlowVolumeTilesY: this.flowVolumeTilesY,
+      uFlowVolumeSteps: p.steps,
+      uFlowFrame: this.flowVolumeFrame,
+      uFlowColorMode: p.colorMode,
+      uFlowColorGain: p.colorGain,
+      uFlowColorFloor: p.colorFloor,
+      uFlowDensityGate: p.densityGate,
+      uFlowVolumeSignalGain: p.signalGain,
+      uFlowVolumeSignalPow: p.signalPow,
+      uFlowVolumeThreshold: p.threshold,
+      uFlowVolumeSoftness: p.softness,
+      uFlowVolumeExtinction: p.extinction,
+      uFlowVolumeEmission: p.emission,
+      uFlowVolumeOpacity: p.opacity,
+      uFlowVolumeDitherAmount: p.ditherAmount,
+      uFlowVolumeDitherScale: p.ditherScale,
+      uFlowVolumeDitherRate: p.ditherRate,
+      uFlowVolumeDitherCoverage: p.ditherCoverage,
+      uFlowVolumeRayJitter: p.rayJitter,
+    });
+    gl.disable(gl.BLEND);
   }
 
   renderVolume(p: VolumeParams) {

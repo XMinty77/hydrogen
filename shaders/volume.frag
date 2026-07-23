@@ -11,10 +11,8 @@
 //     sample along the ray; complex mode hues by the phase at that sample.
 //   1 Emission–absorption — front-to-back compositing: each sample emits its
 //     palette color in linear RGB and occludes what lies behind it via
-//     Beer–Lambert extinction. The glowing-gas look. (The certified default;
-//     its output is bit-stable across iterations.)
-//   2 Anisotropic ambient multi-scattering (iteration 5; replaces the old
-//     single-hard-shadow scatter). EA plus two light terms per sample:
+//     Beer–Lambert extinction. The glowing-gas look and certified default.
+//   2 Anisotropic ambient multi-scattering. EA plus two light terms per sample:
 //       • key light: one shadow ray's optical depth τ drives a Wrenninge-style
 //         octave sum Σ aᵏ·exp(−bᵏτ) — each octave is a softer, brighter
 //         approximation of higher scattering orders, so dense cores glow
@@ -179,9 +177,9 @@ float refineHit(vec3 ro, vec3 rd, float ta, float tb, float level) {
 // Shade one shell hit and composite it front-to-back into (accum, transmit).
 //
 // Coloring is PALETTE-MAPPED SHADING: rather than adding white light (which
-// desaturates the accretion palette into a washed-out mid-ramp grey — the
-// "ugly iso" the flat previous version produced), the surface illumination
-// walks the ramp. An unlit face sits at uIsoAmbient up from its shell's own
+// desaturates the accretion palette into a washed-out mid-ramp grey), the
+// surface illumination walks the ramp. An unlit face sits at uIsoAmbient up
+// from its shell's own
 // `level` (the cool base color); the key light lifts lit faces toward the hot
 // end (gold → white); the Fresnel rim pushes the silhouette hotter still. A
 // single shell therefore shows the full accretion gradient with genuine 3-D
@@ -189,7 +187,7 @@ float refineHit(vec3 ro, vec3 rd, float ta, float tb, float level) {
 // drives lightness while hue stays the phase, so complex shells read cleanly
 // too. Optional crisp white speculars ride on top when a BRDF model is active.
 //
-// uIsoLegacy selects the ORIGINAL shading instead: the shell emits its palette
+// uIsoLegacy selects self-emissive shading instead: the shell emits its palette
 // color at max(bri, level) plus a rim term and (when a BRDF is on) a white
 // specular highlight. It desaturates toward a washed mid-ramp under strong
 // light, but the glassy shell look it gives on some states is worth keeping —
@@ -267,11 +265,9 @@ void main() {
             // ---- Emissive isosurfaces. --------------------------------------
             // Detect all level crossings per step, refine each by bisection
             // (exact surface position, grid-independent), and shade them in ray
-            // order. The scan is deterministic: a jittered grid turned the
-            // silhouette into per-pixel stipple, and an analytic peak-brightness
-            // feather (tried earlier) banded the rims into diagonal moiré on
-            // overlapping transparent shells — both worse than the plain edge,
-            // which supersampling (render scale > 1) resolves cleanly instead.
+            // order. The scan is deterministic; supersampling resolves the
+            // crisp analytic silhouette without ray-grid stipple or coverage
+            // bands on overlapping transparent shells.
             vec3 accum = vec3(0.0);
             float transmit = 1.0;
             float tPrev = t0;
@@ -393,5 +389,5 @@ void main() {
         }
     }
 
-    fragColor = vec4(dither(color, gl_FragCoord.xy), 1.0);
+    fragColor = vec4(dither(flowBaseColor(color), gl_FragCoord.xy), 1.0);
 }

@@ -1,4 +1,4 @@
-/* Minimal chrome: the canvas is the app. lil-gui brings its own styles. */
+/* The canvas is the app; lil-gui and the focused overlay panels provide UI. */
 
 * {
   box-sizing: border-box;
@@ -40,10 +40,38 @@ canvas.view-fill {
   white-space: pre;
 }
 
-/* ---------------------------------------------------------------------------
- * Custom overlay panels (lib/panels.ts): superposition editor, palette
- * editor, keybind help. Visually matched to lil-gui's dark theme.
- * ------------------------------------------------------------------------- */
+.flow-legend {
+  position: fixed;
+  left: 8px;
+  top: 8px;
+  max-width: min(460px, calc(100vw - 320px));
+  padding: 7px 10px;
+  color: #cbd8ed;
+  background: rgba(3, 7, 14, 0.72);
+  border: 1px solid rgba(99, 155, 221, 0.32);
+  border-radius: 5px;
+  box-shadow: 0 3px 16px rgba(0, 0, 0, 0.35);
+  font: 11px/1.45 ui-monospace, "Cascadia Mono", monospace;
+  letter-spacing: 0.015em;
+  white-space: pre-wrap;
+  pointer-events: none;
+}
+
+.flow-legend::first-line {
+  color: #f0a832;
+  font-weight: 700;
+  letter-spacing: 0.055em;
+}
+
+@media (max-width: 720px) {
+  .flow-legend {
+    top: auto;
+    bottom: 56px;
+    max-width: calc(100vw - 16px);
+  }
+}
+
+/* Focused overlay panels (lib/panels.ts), matched to lil-gui's dark theme. */
 
 .hy-panel {
   position: fixed;
@@ -69,6 +97,10 @@ canvas.view-fill {
   left: auto;
   right: 300px;
   width: 420px;
+}
+
+.hy-presets {
+  width: 560px;
 }
 
 .hy-panel-head {
@@ -156,6 +188,100 @@ canvas.view-fill {
   border-radius: 4px;
   padding: 3px 6px;
   font: inherit;
+}
+
+/* Preset browser */
+.hy-preset-section + .hy-preset-section {
+  border-top: 1px solid #333;
+  margin-top: 12px;
+  padding-top: 8px;
+}
+
+.hy-preset-heading {
+  margin: 0;
+  color: #ddd;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.035em;
+}
+
+.hy-preset-category-sub {
+  margin: 2px 0 7px;
+  color: #777;
+  font-size: 11px;
+}
+
+.hy-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.hy-preset-grid-single .hy-preset-card {
+  grid-column: 1 / -1;
+}
+
+.hy-preset-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-height: 56px;
+  padding: 7px 8px;
+  text-align: left;
+  background: #272727;
+  color: #ddd;
+  border: 1px solid #383838;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.hy-preset-card:hover,
+.hy-preset-card:focus-visible,
+.hy-preset-card-active {
+  background: #303030;
+  border-color: #f0a832;
+  outline: none;
+}
+
+.hy-preset-name {
+  color: #e7e7e7;
+  font-weight: 600;
+}
+
+.hy-preset-desc {
+  color: #929292;
+  font: 11px/1.3 system-ui, sans-serif;
+}
+
+.hy-preset-tags {
+  display: flex;
+  gap: 4px;
+  margin-top: auto;
+  padding-top: 3px;
+  flex-wrap: wrap;
+}
+
+.hy-preset-tag {
+  padding: 1px 5px;
+  color: #9ca9bc;
+  background: #20242a;
+  border: 1px solid #343b46;
+  border-radius: 999px;
+  font: 9px/1.35 ui-monospace, monospace;
+  letter-spacing: 0.025em;
+}
+
+@media (max-width: 620px) {
+  .hy-preset-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .hy-palette {
+    left: 12px;
+    right: auto;
+  }
 }
 
 .hy-check {

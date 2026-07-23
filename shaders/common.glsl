@@ -35,7 +35,7 @@ uniform int uM;                  // signed magnetic quantum number
 uniform bool uRealMode;          // real (textbook) vs complex (CS) harmonics
 
 // ---------------------------------------------------------------------------
-// Superposition (iteration 6): ψ = Σₖ cₖ · ψ_{nₖlₖmₖ}, up to MAX_TERMS terms.
+// Superposition: ψ = Σₖ cₖ · ψ_{nₖlₖmₖ}, up to MAX_TERMS terms.
 //
 // Each term's radial/angular table occupies one ROW of a 2D texture (all
 // radial tables share one width, likewise angular — fixed by the HORB format),
@@ -44,9 +44,9 @@ uniform bool uRealMode;          // real (textbook) vs complex (CS) harmonics
 // user amplitude·e^{iφ₀}, the optional time factor e^{−iEₙt} (folded in on the
 // CPU — time evolution costs the shader nothing), and normalization.
 //
-// uSupCount = 0 selects the certified single-state path below, bit-identical
-// to previous iterations (and what hosts that never set these uniforms get,
-// since GL zero-initializes them).
+// uSupCount = 0 selects the certified single-state path below. It is also the
+// safe default for hosts that omit these uniforms because GL initializes them
+// to zero.
 // ---------------------------------------------------------------------------
 const int MAX_TERMS = 8;
 uniform int uSupCount;                 // 0: single state; 1..MAX_TERMS: superpose
@@ -94,8 +94,7 @@ const int MAX_STOPS = 8;
 uniform vec3 uRampColor[MAX_STOPS];  // stop colors: OKLab, or sRGB if uRampSpaceSrgb
 uniform float uRampPos[MAX_STOPS];   // stop positions, ascending, in [0,1]
 uniform int uRampN;                  // number of active stops
-uniform bool uRampSpaceSrgb;         // true: lerp in gamma sRGB (prototype
-                                     // reproduction); false: lerp in OKLab
+uniform bool uRampSpaceSrgb;         // true: lerp in gamma sRGB; false: OKLab
 uniform float uPhaseL;               // phase wheel: OKLCH lightness…
 uniform float uPhaseC;               // …chroma (inside gamut at every hue)…
 uniform float uPhaseH0;              // …and hue of phase 0 (radians)
@@ -153,8 +152,8 @@ vec2 basisPsi(float R, float P, int m, float phi) {
 
 // ψ at a world position (Bohr radii), as (re, im). Real mode keeps im = 0
 // (until a complex coefficient — e.g. time evolution — rotates it).
-// The uSupCount == 0 path is the Float32 pipeline the validation study
-// certified, bit-identical to previous iterations.
+// The uSupCount == 0 path is the Float32 pipeline certified by the validation
+// study.
 vec2 evalPsi(vec3 p) {
     float rc = length(p.xy);              // cylindrical radius
     float r = length(vec2(rc, p.z));
@@ -310,13 +309,10 @@ vec3 rampColor(float t) {
 // lobes reflect its hue across the 125° OKLab axis. That axis is chosen so
 // the ramp's dark-purple base (305°) is a fixed point — both signs share one
 // background — while the bright structure maps red→blue and gold→green, the
-// intuitive "cool inverse of hot" pairing (user-tuned 2026-07-19). Lightness
-// is untouched, so perceptual weight stays identical; reflected chroma can
-// exceed the sRGB gamut in the cyan-blue region and relies on the final RGB
-// clamp, exactly as (and measurably less than) the previous complement did.
+// intuitive "cool inverse of hot" pairing. Lightness is untouched, so
+// perceptual weight stays identical; reflected chroma can exceed the sRGB
+// gamut in the cyan-blue region and relies on the final RGB clamp.
 // Matrix is [cos 2α, sin 2α; sin 2α, −cos 2α] with 2α = 250°.
-// REVERT to the previous chroma complement (180° rotation) by replacing the
-// reflection with:  lab.yz = -lab.yz;   (mirror lab/scripts/render_reference.jl!)
 vec3 rampColorSigned(float t, float sgn) {
     vec3 lab = uRampSpaceSrgb ? vec3(0.0) : rampStops(t);   // sRGB space: no
     if (uRampSpaceSrgb) return rampColor(t);                // signed variant
@@ -381,7 +377,7 @@ vec3 dither(vec3 color, vec2 fragCoord) {
 }
 
 // ============================================================================
-// Volumetric technique library (iteration 5).
+// Volumetric technique library.
 //
 // Shared by every 3D view shader (volume.frag, pathtrace.frag, eikonal.frag):
 // the perspective camera, the clipped domain, field gradients, the stochastic
@@ -422,6 +418,23 @@ uniform float uGradDelta;      // finite-difference half-step for gradients,
                                // as a fraction of uRMax
 
 // ---------------------------------------------------------------------------
+// Spinless Schrödinger probability current (atomic units: ℏ = mₑ = 1).
+//
+// j = Im(conj(ψ) ∇ψ). We differentiate the complex wavefunction itself rather
+// than arg(ψ), so wrapped-phase branch cuts can never create fake currents.
+// `uCurrentDerivative == 0` is the six-neighbour central estimate; 1 selects
+// the more expensive fourth-order stencil for convergence checks and stills.
+// The exact j is kept separate from confidence/velocity regularization. The
+// latter is used by the advected-flow solvers; it never overwrites the
+// conserved flux field.
+// ---------------------------------------------------------------------------
+uniform int   uCurrentDerivative;  // 0 second-order central, 1 fourth-order
+uniform float uCurrentDelta;       // derivative half-step, fraction of uRMax
+uniform float uCurrentNodeEps;     // velocity regularizer, multiples of q999
+uniform bool  uFlowOverlayEnabled;
+uniform float uFlowBase;           // analytic base brightness under flow
+
+// ---------------------------------------------------------------------------
 // Field access: brightness, clipping, gradients.
 // ---------------------------------------------------------------------------
 float fieldBright(vec3 p) { return brightnessOf(evalPsi(p)); }
@@ -459,6 +472,40 @@ vec3 fieldDensityGradient(vec3 p, float h) {
     return vec3(fieldDensity(p + e.xyy) - fieldDensity(p - e.xyy),
                 fieldDensity(p + e.yxy) - fieldDensity(p - e.yxy),
                 fieldDensity(p + e.yyx) - fieldDensity(p - e.yyx)) / (2.0 * h);
+}
+
+vec2 currentDerivativeAt(vec3 p, vec3 axis, float h) {
+    if (uCurrentDerivative == 1) {
+        return (-evalPsi(p + 2.0 * h * axis)
+                + 8.0 * evalPsi(p + h * axis)
+                - 8.0 * evalPsi(p - h * axis)
+                + evalPsi(p - 2.0 * h * axis)) / (12.0 * h);
+    }
+    return (evalPsi(p + h * axis) - evalPsi(p - h * axis)) / (2.0 * h);
+}
+
+struct CurrentSample {
+    vec2 psi;
+    float rho;
+    vec3 j;
+    float confidence;
+};
+
+CurrentSample evalCurrent(vec3 p) {
+    CurrentSample s;
+    s.psi = evalPsi(p);
+    s.rho = dot(s.psi, s.psi);
+    float h = max(uCurrentDelta, 1e-5) * uRMax;
+    vec2 dx = currentDerivativeAt(p, vec3(1.0, 0.0, 0.0), h);
+    vec2 dy = currentDerivativeAt(p, vec3(0.0, 1.0, 0.0), h);
+    vec2 dz = currentDerivativeAt(p, vec3(0.0, 0.0, 1.0), h);
+    // Im(conj(ψ) dψ) = Re(ψ) dIm(ψ) - Im(ψ) dRe(ψ).
+    s.j = s.psi.x * vec3(dx.y, dy.y, dz.y)
+        - s.psi.y * vec3(dx.x, dy.x, dz.x);
+
+    float epsRho = max(uCurrentNodeEps * uQ999, 1e-30);
+    s.confidence = s.rho / (s.rho + epsRho);
+    return s;
 }
 
 // ---------------------------------------------------------------------------
@@ -631,8 +678,13 @@ vec3 colorLDR(vec2 psi, float bri) {
     return rampColor(bri);
 }
 
+// Dim the analytic density render while an advected layer is active.
+vec3 flowBaseColor(vec3 color) {
+    return uFlowOverlayEnabled ? color * clamp(uFlowBase, 0.0, 1.0) : color;
+}
+
 // ---------------------------------------------------------------------------
-// Local illumination models (iteration 5 experiments). Applied either on
+// Local illumination models. Applied either on
 // isosurface hits or — gated by gradient confidence — inside the volume
 // integrators, giving shell-like regions a lit-surface response while flat
 // regions stay pure emission (the anti-"furriness" constraint).

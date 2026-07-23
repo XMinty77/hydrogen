@@ -107,5 +107,5 @@ void main() {
     } else {
         hdr = traceEikonal(uCamPos, rd, uIorScale, jitter);
     }
-    fragColor = vec4(dither(displayTransform(hdr), gl_FragCoord.xy), 1.0);
+    fragColor = vec4(dither(flowBaseColor(displayTransform(hdr)), gl_FragCoord.xy), 1.0);
 }

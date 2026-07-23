@@ -1,5 +1,5 @@
 // =============================================================================
-// GalleryCommand.cs — the exhaustive still-image gallery batch (M4).
+// GalleryCommand.cs — the exhaustive still-image gallery batch.
 // =============================================================================
 //
 // Implements docs/gallery-spec.md: for every state |n, l, m⟩ with n ≤ n_max
@@ -7,8 +7,8 @@
 // 23-image set (22 when the equatorial slice is parity-skipped) into
 //   gallery/stills/n{n}/l{l}/m{m}/*.png
 // and writes one static HTML contact sheet per n plus a master index. The set
-// is the classic slices + MIP/EA views plus the iteration-6 technique
-// showcase (MIDA, multi-scatter, lit isosurfaces, eikonal, path-traced
+// is the classic slices + MIP/EA views plus a technique showcase (MIDA,
+// multi-scatter, lit isosurfaces, eikonal, path-traced
 // nebula), all sharing the canonical ¾ camera for side-by-side comparison.
 //
 // Everything runs in one process on one GL context with cached tables —
@@ -34,7 +34,7 @@ public static class GalleryCommand
     private static readonly (string name, double az, double el, double dist)[] Views =
     [
         ("q34", 35, 25, 2.6),       // canonical ¾
-        ("side", 0, 0, 2.6),        // perfectly horizontal profile (user, 2026-07-19)
+        ("side", 0, 0, 2.6),        // perfectly horizontal profile
         ("side_tilt", 0, 15, 2.6),  // secondary side view, slightly tilted
         ("diag_side", 0, 60, 2.9),  // 30° down from the top, no azimuthal rotation
         ("top", 35, 78, 3.1),       // down the z-axis
@@ -143,8 +143,8 @@ public static class GalleryCommand
                               double distFactor, int integrator, bool halfCut)
                 {
                     var cam = OrbitCam(az, el, distFactor * extent);
-                    // EA transfer (density/opacity/emission) rides on the
-                    // VolumeParams defaults — the user-tuned values.
+                    // EA transfer (density/opacity/emission) uses the shared
+                    // VolumeParams defaults.
                     return volumes.Render(new VolumeParams
                     {
                         Common = Common(real, color),
@@ -157,8 +157,8 @@ public static class GalleryCommand
                     });
                 }
 
-                // MIP reads well only through the brightness ramp (user,
-                // 2026-07-19): the max-|ψ|² sample carries no depth context,
+                // MIP reads well only through the brightness ramp: the
+                // max-|ψ|² sample carries no depth context,
                 // so signed/phase hues at it look arbitrary. Those color modes
                 // ride the EA integrator instead — signed at all three angles.
                 foreach (var (name, az, el, dist) in Views)
@@ -178,7 +178,7 @@ public static class GalleryCommand
                 Save(Path.Combine(dir, "3d_ea_complex_q34.png"),
                      Volume(false, 2, cAz, cEl, cDist, 1, false));
 
-                // ---- iteration-6 techniques, all at the canonical ¾ camera ------
+                // ---- technique comparisons at the canonical ¾ camera ------------
                 var q34cam = OrbitCam(cAz, cEl, cDist * extent);
                 VolumeParams Vp(bool real, int color, int integrator) => new()
                 {
@@ -208,7 +208,7 @@ public static class GalleryCommand
                          CamPos = q34cam.pos, CamRight = q34cam.right,
                          CamUp = q34cam.up, CamFwd = q34cam.fwd,
                      }));
-                // Path-traced "nebula" (the iteration-5 recipe) in phase colors.
+                // Path-traced nebula in phase colors.
                 Save(Path.Combine(dir, "3d_pt_phase_q34.png"),
                      pathtracer.Render(new PathtraceParams
                      {

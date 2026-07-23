@@ -1,8 +1,7 @@
 // =============================================================================
-// panels.ts — the custom overlay panels: superposition editor, palette editor,
-// keybind help. Plain DOM (no React): the whole viewer already lives outside
-// React's render cycle, and these panels bind straight to the same mutable
-// Params object lil-gui does. Styling lives in app/globals.css (.hy-*).
+// panels.ts — focused editors that do not fit lil-gui's one-control-per-row
+// model: curated presets, superpositions, palettes, and keyboard help. They
+// bind to the same mutable Params object as the main GUI.
 // =============================================================================
 
 import {
@@ -16,13 +15,8 @@ import {
 } from "./color";
 import type { Params, RampStop } from "./params";
 import type { Ramp } from "./palettes";
-import {
-  beatPeriod,
-  clampTerm,
-  MAX_TERMS,
-  SUPER_PRESETS,
-  type SuperTerm,
-} from "./superposition";
+import { PRESET_CATEGORIES, type ViewerPreset } from "./presets";
+import { beatPeriod, clampTerm, MAX_TERMS, type SuperTerm } from "./superposition";
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -49,11 +43,8 @@ function button(label: string, cls: string, onClick: () => void): HTMLButtonElem
 export interface TermsPanelOptions {
   params: Params;
   nMax: number;
-  /** Called after any edit (terms, normalize, preset). `structural` = the term
-   * list itself changed (new textures / normalization), not just a value. */
+  /** Called after a term or normalization edit. */
   onChange: () => void;
-  /** A preset may switch real/complex mode and suggest a time scale. */
-  onPreset: (mode: "real" | "complex", timeScale: number) => void;
 }
 
 export class TermsPanel {
@@ -92,22 +83,6 @@ export class TermsPanel {
         this.opts.onChange();
       }),
     );
-
-    const preset = el("select", "hy-select") as HTMLSelectElement;
-    preset.append(new Option("presets…", "", true, true));
-    SUPER_PRESETS.forEach((pr, i) => preset.append(new Option(pr.name, `${i}`)));
-    preset.addEventListener("change", () => {
-      if (preset.value === "") return;
-      const pr = SUPER_PRESETS[+preset.value];
-      const p = this.opts.params;
-      p.terms = pr.terms.map((t) => clampTerm({ ...t }, this.opts.nMax));
-      p.superNormalize = true;
-      this.opts.onPreset(pr.mode, pr.timeScale);
-      preset.value = "";
-      this.render();
-      this.opts.onChange();
-    });
-    foot.append(preset);
 
     const normLabel = el("label", "hy-check");
     const norm = el("input") as HTMLInputElement;
@@ -256,6 +231,71 @@ export class TermsPanel {
       }),
     );
     return row;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Preset browser.
+// ---------------------------------------------------------------------------
+
+export interface PresetsPanelOptions {
+  presets: readonly ViewerPreset[];
+  onApply: (preset: ViewerPreset) => void;
+}
+
+export class PresetsPanel {
+  readonly root: HTMLDivElement;
+  private activeCard: HTMLButtonElement | null = null;
+
+  constructor(opts: PresetsPanelOptions) {
+    this.root = el("div", "hy-panel hy-presets");
+    this.root.style.display = "none";
+
+    const head = el("div", "hy-panel-head");
+    head.append(el("span", "hy-panel-title", "presets"));
+    head.append(button("×", "hy-close", () => this.hide()));
+    this.root.append(head);
+    this.root.append(el("div", "hy-panel-sub", "Authored starting scenes; every control remains editable."));
+
+    for (const category of PRESET_CATEGORIES) {
+      const section = el("section", "hy-preset-section");
+      section.append(el("h3", "hy-preset-heading", category.label));
+      section.append(el("p", "hy-preset-category-sub", category.description));
+      const entries = opts.presets.filter((p) => p.category === category.id);
+      const grid = el("div", "hy-preset-grid");
+      if (entries.length === 1) grid.classList.add("hy-preset-grid-single");
+      for (const preset of entries) {
+        const card = button("", "hy-preset-card", () => {
+          this.activeCard?.classList.remove("hy-preset-card-active");
+          this.activeCard = card;
+          card.classList.add("hy-preset-card-active");
+          opts.onApply(preset);
+        });
+        card.append(el("span", "hy-preset-name", preset.name));
+        card.append(el("span", "hy-preset-desc", preset.description));
+        const tags = el("span", "hy-preset-tags");
+        for (const tag of preset.tags) tags.append(el("span", "hy-preset-tag", tag));
+        card.append(tags);
+        grid.append(card);
+      }
+      section.append(grid);
+      this.root.append(section);
+    }
+    document.body.append(this.root);
+  }
+
+  get visible(): boolean {
+    return this.root.style.display !== "none";
+  }
+  show() {
+    this.root.style.display = "";
+  }
+  hide() {
+    this.root.style.display = "none";
+  }
+  toggle() {
+    if (this.visible) this.hide();
+    else this.show();
   }
 }
 
@@ -637,7 +677,7 @@ const KEYBINDS: [string, string][] = [
   ["C", "toggle center-locked fly (always look at the nucleus)"],
   ["Space", "play / pause time evolution"],
   ["R", "reset time to t = 0"],
-  ["P", "save a PNG of the current frame (no UI)"],
+  ["P", "render a PNG with the independent capture settings"],
   ["U", "copy the current view URL"],
   ["G", "show / hide the control panels"],
   ["Esc", "return focus to the canvas (re-enable these keys)"],

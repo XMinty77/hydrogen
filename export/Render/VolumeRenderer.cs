@@ -29,8 +29,7 @@ public sealed record VolumeParams
     /// <summary>Ray samples inside the domain. 600 is clean at 1–2K preview;
     /// push into the thousands for supersampled stills.</summary>
     public int Steps { get; init; } = 600;
-    // EA transfer defaults below are the user-tuned values (2026-07-19, found
-    // interactively in the web demo).
+    // EA transfer defaults are shared with the interactive host.
     /// <summary>Emission–absorption extinction: optical depth per domain
     /// radius at unit brightness.</summary>
     public double DensityScale { get; init; } = 5.0;
@@ -73,6 +72,9 @@ public sealed record VolumeParams
     public double IsoAlpha { get; init; } = 0.4;
     public double IsoEmission { get; init; } = 2.5;
     public double IsoRim { get; init; } = 1.5;
+    public double IsoAmbient { get; init; } = 0.15;
+    /// <summary>Use self-emissive rather than palette-mapped shell shading.</summary>
+    public bool IsoLegacy { get; init; } = false;
 
     // --- local illumination overlay ------------------------------------------
     /// <summary>0 off, 1 Lambert, 2 Blinn–Phong, 3 GGX/Fresnel.</summary>
@@ -133,6 +135,8 @@ public sealed class VolumeRenderer(OffscreenGl ctx, HorbAsset asset, PaletteSet 
         gl.Uniform1(Loc("uIsoAlpha"), (float)p.IsoAlpha);
         gl.Uniform1(Loc("uIsoEmission"), (float)p.IsoEmission);
         gl.Uniform1(Loc("uIsoRim"), (float)p.IsoRim);
+        gl.Uniform1(Loc("uIsoAmbient"), (float)p.IsoAmbient);
+        gl.Uniform1(Loc("uIsoLegacy"), p.IsoLegacy ? 1 : 0);
 
         gl.Uniform1(Loc("uShadeModel"), p.ShadeModel);
         gl.Uniform1(Loc("uShadeDiffuse"), (float)p.ShadeDiffuse);

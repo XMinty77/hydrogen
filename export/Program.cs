@@ -5,7 +5,7 @@
 // Usage:
 //   dotnet run -- slice  [options]       render one 2D cross-section PNG
 //   dotnet run -- volume [options]       render one 3D volumetric PNG
-//   dotnet run -- gallery [options]      the exhaustive still batch (M4/M6)
+//   dotnet run -- gallery [options]      the exhaustive still batch
 //   dotnet run -- url "<link>" [options] reproduce a web-demo URL offline
 //                                        (view inferred; options override)
 //
@@ -17,19 +17,29 @@
 //   --no-normalize      keep raw amplitudes (default normalizes Σ|c|² = 1)
 //   --time T            simulated time, atomic units (phase e^{−iEₙt})
 //   --mode real|complex                            (default real)
-//   --color ramp|signed|phase   (default: ramp for real, phase for complex)
+//   --color ramp|signed|phase|okphase  (default: ramp real, phase complex)
 //   --size W[xH]        output pixels              (default 1024)
 //   --gamma F           brightening exponent       (default 0.71)
 //   --value density|amplitude                      (default density)
 //   --compress off|log|asinh   pre-gamma range compression (default off)
 //   --compress-k F      compression strength       (default 20)
+//   --compress-white F  white point in q999 multiples (default 1)
 //   --ramp NAME         palette ramp name          (default accretion_tuned)
 //   --ramp-stops S      custom ramp "hex@pos,…" (implies --ramp custom)
 //   --ramp-space oklab|srgb   stop interpolation   (default oklab)
 //   --phase-constant    constant-chroma wheel instead of the vivid default
 //   --phase-chroma-pow F                           (default 0.6)
 //   --phase-L/--phase-C/--phase-h0-deg   wheel overrides (exploration)
+//   --okphase-signed    reflect negative-real hues in okphase mode
 //   --no-dither         disable output dithering
+//   --post              enable display-referred finishing
+//   --no-bloom          disable bloom while keeping other post effects
+//   --bloom-threshold/-knee/-intensity/-radius/-iterations/-scale/-saturation
+//   --bloom-tint RRGGBB, --bloom-composite screen|additive
+//   --post-exposure/-contrast/-saturation/-vibrance
+//   --post-aberration/--post-aberration-falloff
+//   --vignette plus --vignette-amount/-radius/-softness/-roundness/-center-x/-center-y
+//   --grain plus --grain-amount/-scale/-speed and --grain-colored
 //   --out PATH          output file (default under gallery/)
 //
 // Slice options:
@@ -44,7 +54,7 @@
 //   --camera AZ,EL,DIST  orbit camera: azimuth/elevation degrees, distance in
 //                        multiples of the framing radius (default 35,25,2.6)
 //   --fov F              vertical field of view, degrees (default 40)
-//   --integrator mip|ea|scatter|mida|iso|pathtrace|eikonal   (default mip)
+//   --integrator mip|ea|scatter|mida|iso|isolegacy|pathtrace|eikonal
 //   --steps N            ray samples (default 600; eikonal wants ~300–600)
 //   --density/--opacity-pow/--emission   EA transfer (defaults 5/2.15/6.7)
 //   --tonemap gamma|agx  display transform          (default gamma)
@@ -56,7 +66,7 @@
 //   --octaves/--octave-gain/--octave-ext         multi-scatter octaves
 //   --ambient-gain/-dirs/-radius/-density        ambient occlusion field
 //   --mida-gamma F       −1 EA … 0 MIDA … +1 MIP      (default 0)
-//   --iso-level/-count/-spacing/-alpha/-emission/-rim    isosurfaces
+//   --iso-level/-count/-spacing/-alpha/-emission/-rim/-ambient  isosurfaces
 //   --shade-model off|lambert|blinn|ggx          lit-surface overlay
 //   --shade-diffuse/-spec/-rough/-f0/-conf, --grad-delta
 //   --spp N              path tracer: samples per pixel (default 64)
@@ -75,6 +85,7 @@ using Hydrogen.Export.Gl;
 using Hydrogen.Export.Horb;
 using Hydrogen.Export.Palettes;
 using Hydrogen.Export.Render;
+using System.Numerics;
 
 string root = AppContext.BaseDirectory;
 while (!Directory.Exists(Path.Combine(root, "shaders")))
@@ -114,7 +125,10 @@ for (int i = argStart; i < args.Length; i++)
     if (!args[i].StartsWith("--"))
         throw new ArgumentException($"unexpected argument '{args[i]}'");
     string key = args[i][2..];
-    if (key is "no-dither" or "phase-constant" or "no-normalize") flags.Add(key);
+    if (key is "no-dither" or "phase-constant" or "no-normalize"
+        or "okphase-signed" or "post" or "no-bloom" or "vignette"
+        or "grain" or "grain-colored")
+        flags.Add(key);
     else if (key == "clip")
     {
         var v = args[++i].Split(',').Select(double.Parse).ToArray();
@@ -139,6 +153,14 @@ double GetF(string key, double fallback) =>
     opt.TryGetValue(key, out var s) ? double.Parse(s) : fallback;
 int GetI(string key, int fallback) =>
     opt.TryGetValue(key, out var s) ? (int)Math.Round(double.Parse(s)) : fallback;
+Vector3 GetRgb(string key, string fallback)
+{
+    string hex = Get(key, fallback).Trim().TrimStart('#');
+    if (hex.Length != 6 || !int.TryParse(hex, System.Globalization.NumberStyles.HexNumber,
+                                         null, out int rgb))
+        throw new ArgumentException($"--{key} needs a six-digit RRGGBB color");
+    return new Vector3((rgb >> 16) / 255f, ((rgb >> 8) & 255) / 255f, (rgb & 255) / 255f);
+}
 
 int[] state = Get("state", "4,2,1").Split(',').Select(int.Parse).ToArray();
 if (state.Length != 3)
@@ -156,6 +178,7 @@ int colorMode = Get("color", realMode ? "ramp" : "phase") switch
     "ramp" => 0,
     "signed" => 1,
     "phase" => 2,
+    "okphase" => 3,
     var s => throw new ArgumentException($"unknown color mode '{s}'"),
 };
 
@@ -219,9 +242,11 @@ var common = new CommonParams
     ValueMode = Get("value", "density") == "amplitude" ? 1 : 0,
     CompressMode = compressMode,
     CompressK = GetF("compress-k", 20.0),
+    CompressWhite = GetF("compress-white", 1.0),
     Dither = !flags.Contains("no-dither"),
     PhaseVivid = !flags.Contains("phase-constant"),
     PhaseChromaPow = GetF("phase-chroma-pow", 0.6),
+    OkPhaseSigned = flags.Contains("okphase-signed"),
 };
 
 // Framing radius: the state's — or, for superpositions, the largest term's.
@@ -396,7 +421,8 @@ else
     {
         int integratorId = integrator switch
         {
-            "mip" => 0, "ea" => 1, "scatter" => 2, "mida" => 3, "iso" => 4,
+            "mip" => 0, "ea" => 1, "scatter" => 2, "mida" => 3,
+            "iso" => 4, "isolegacy" => 4,
             var s => throw new ArgumentException($"unknown integrator '{s}'"),
         };
         int shadeModel = Get("shade-model", "off") switch
@@ -411,6 +437,7 @@ else
             CamPos = pos, CamRight = right, CamUp = up, CamFwd = fwd,
             FovYDeg = fov, Tonemap = tonemap, ExposureEv = exposure,
             Integrator = integratorId,
+            IsoLegacy = integrator == "isolegacy",
             // URLs omit values at the WEB defaults — steps is the one place
             // the two hosts' defaults differ (interactive 64 vs offline 600),
             // so URL-seeded renders reproduce the browser's sampling.
@@ -437,6 +464,7 @@ else
             IsoAlpha = GetF("iso-alpha", 0.4),
             IsoEmission = GetF("iso-emission", 2.5),
             IsoRim = GetF("iso-rim", 1.5),
+            IsoAmbient = GetF("iso-ambient", 0.15),
             ShadeModel = shadeModel,
             ShadeDiffuse = GetF("shade-diffuse", 0.5),
             ShadeSpec = GetF("shade-spec", 2.0),
@@ -452,6 +480,42 @@ else
 }
 
 string outPath = Get("out", Path.Combine(root, defaultOut));
+pixels = PostProcessor.Apply(pixels, width, height, new PostProcessParams
+{
+    Enabled = flags.Contains("post"),
+    BloomEnabled = !flags.Contains("no-bloom"),
+    BloomThreshold = GetF("bloom-threshold", 0.72),
+    BloomKnee = GetF("bloom-knee", 0.4),
+    BloomIntensity = GetF("bloom-intensity", 0.55),
+    BloomRadius = GetF("bloom-radius", 1.0),
+    BloomIterations = GetI("bloom-iterations", 3),
+    BloomScale = GetF("bloom-scale", 0.5),
+    BloomSaturation = GetF("bloom-saturation", 1.0),
+    BloomTint = GetRgb("bloom-tint", "ffffff"),
+    BloomComposite = Get("bloom-composite", "screen") switch
+    {
+        "screen" => 0, "additive" => 1,
+        var s => throw new ArgumentException($"unknown bloom composite '{s}'"),
+    },
+    Exposure = GetF("post-exposure", 0.0),
+    Contrast = GetF("post-contrast", 1.0),
+    Saturation = GetF("post-saturation", 1.0),
+    Vibrance = GetF("post-vibrance", 0.0),
+    AberrationPx = GetF("post-aberration", 0.0),
+    AberrationFalloff = GetF("post-aberration-falloff", 1.5),
+    VignetteEnabled = flags.Contains("vignette"),
+    VignetteAmount = GetF("vignette-amount", 0.28),
+    VignetteRadius = GetF("vignette-radius", 0.82),
+    VignetteSoftness = GetF("vignette-softness", 0.38),
+    VignetteRoundness = GetF("vignette-roundness", 1.0),
+    VignetteCenterX = GetF("vignette-center-x", 0.0),
+    VignetteCenterY = GetF("vignette-center-y", 0.0),
+    GrainEnabled = flags.Contains("grain"),
+    GrainAmount = GetF("grain-amount", 0.025),
+    GrainScale = GetF("grain-scale", 1.0),
+    GrainTime = timeAu * GetF("grain-speed", 1.0),
+    GrainColored = flags.Contains("grain-colored"),
+});
 Png.Write(outPath, pixels, width, height);
 Console.WriteLine($"wrote {outPath}");
 return 0;

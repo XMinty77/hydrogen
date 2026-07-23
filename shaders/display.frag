@@ -17,5 +17,5 @@ out vec4 fragColor;
 void main() {
     vec4 a = texelFetch(uAccum, ivec2(gl_FragCoord.xy), 0);
     vec3 hdr = a.rgb / max(a.a, 1.0);
-    fragColor = vec4(dither(displayTransform(hdr), gl_FragCoord.xy), 1.0);
+    fragColor = vec4(dither(flowBaseColor(displayTransform(hdr)), gl_FragCoord.xy), 1.0);
 }

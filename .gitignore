@@ -11,4 +11,5 @@ obj/
 node_modules/
 dist/
 .vite/
+.local/
 Manifest.toml

@@ -31,6 +31,23 @@ public static class UrlQuery
         ("state", "state"), ("mode", "mode"), ("color", "color"),
         ("value", "value"), ("gamma", "gamma"),
         ("compress", "compress"), ("compressK", "compress-k"),
+        ("compressWhite", "compress-white"),
+        ("bloomThreshold", "bloom-threshold"), ("bloomKnee", "bloom-knee"),
+        ("bloomIntensity", "bloom-intensity"), ("bloomRadius", "bloom-radius"),
+        ("bloomIterations", "bloom-iterations"), ("bloomScale", "bloom-scale"),
+        ("bloomSaturation", "bloom-saturation"), ("bloomTint", "bloom-tint"),
+        ("bloomComposite", "bloom-composite"),
+        ("postExposure", "post-exposure"), ("postContrast", "post-contrast"),
+        ("postSaturation", "post-saturation"), ("postVibrance", "post-vibrance"),
+        ("postAberration", "post-aberration"),
+        ("postAberrationFalloff", "post-aberration-falloff"),
+        ("vignetteAmount", "vignette-amount"), ("vignetteRadius", "vignette-radius"),
+        ("vignetteSoftness", "vignette-softness"),
+        ("vignetteRoundness", "vignette-roundness"),
+        ("vignetteCenterX", "vignette-center-x"),
+        ("vignetteCenterY", "vignette-center-y"),
+        ("grainAmount", "grain-amount"), ("grainScale", "grain-scale"),
+        ("grainSpeed", "grain-speed"),
         ("ramp", "ramp"), ("rampSpace", "ramp-space"), ("rampStops", "ramp-stops"),
         ("chromaPow", "phase-chroma-pow"), ("phaseL", "phase-L"),
         ("phaseC", "phase-C"), ("phaseH0Deg", "phase-h0-deg"),
@@ -49,6 +66,7 @@ public static class UrlQuery
         ("isoLevel", "iso-level"), ("isoCount", "iso-count"),
         ("isoSpacing", "iso-spacing"), ("isoAlpha", "iso-alpha"),
         ("isoEmission", "iso-emission"), ("isoRim", "iso-rim"),
+        ("isoAmbient", "iso-ambient"),
         ("shadeModel", "shade-model"), ("shadeDiffuse", "shade-diffuse"),
         ("shadeSpec", "shade-spec"), ("shadeRough", "shade-rough"),
         ("shadeF0", "shade-f0"), ("shadeConf", "shade-conf"),
@@ -86,6 +104,12 @@ public static class UrlQuery
         if (q["vivid"] == "0") flags.Add("phase-constant");
         if (q["dither"] == "0") flags.Add("no-dither");
         if (q["normalize"] == "0") flags.Add("no-normalize");
+        if (q["okSigned"] == "1") flags.Add("okphase-signed");
+        if (q["post"] == "1") flags.Add("post");
+        if (q["bloom"] == "0") flags.Add("no-bloom");
+        if (q["vignette"] == "1") flags.Add("vignette");
+        if (q["grain"] == "1") flags.Add("grain");
+        if (q["grainColor"] == "1") flags.Add("grain-colored");
 
         // Clip planes: web specs are camera-basis-relative; the caller
         // converts them once the camera pose exists.

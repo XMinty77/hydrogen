@@ -31,8 +31,8 @@ using Statistics: quantile   # (unweighted; weighted version implemented below)
 # Domain sizing: how far out to tabulate.
 # -----------------------------------------------------------------------------
 
-"Display half-width heuristic carried over from the prototype: the classical
-turning point sits near r = 2n², so `factor`·n² tracks it with headroom, and
+"Display half-width heuristic: the classical turning point sits near r = 2n²,
+so `factor`·n² tracks it with headroom, and
 the additive `pad` keeps the diffuse tails of low-n states from being clipped.
 This is the *framing* radius — where the interesting structure lives, and the
 ball over which display statistics are computed. It is NOT a safe truncation
@@ -47,8 +47,7 @@ Display/framing radius for principal quantum number `n` (Bohr radii): the
 default camera extent, and the ball over which `display_stats` quantiles are
 taken. Radial *tables* extend farther — to `safe_clip_radius` — because ψ is
 still faintly visible here (measured: truncating at this radius leaves a
-10–16% brightness discontinuity under the default display mapping, a hard
-spherical edge the prototype actually had).
+10–16% brightness discontinuity under the default display mapping).
 """
 r_max_for(n::Integer) = EXTENT_FACTOR * n^2 + EXTENT_PAD
 
@@ -208,8 +207,8 @@ lookup_angular(tab::AngularTable, θ::Float32) =
 # Display statistics.
 #
 # The renderers map |ψ|² → [0,1] before colormapping. Dividing by the global
-# max makes everything but the nuclear spike invisible, so (as in the
-# prototype) we normalize by a high *volume-weighted quantile* of |ψ|² over the
+# max makes everything but the nuclear spike invisible, so we normalize by a
+# high *volume-weighted quantile* of |ψ|² over the
 # ball r ≤ r_max. Those quantiles depend on (n, l, |m|, mode) only:
 #   • |m| not m — the ±m states differ by an azimuth rotation (real mode) or
 #     a global phase (complex mode), neither of which changes value statistics;

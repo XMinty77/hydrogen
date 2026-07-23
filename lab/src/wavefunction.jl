@@ -36,9 +36,8 @@
 #       m > 0:  √2 (−1)^m P̄_l^m cos(mφ)
 #       m = 0:  P̄_l^0
 #       m < 0:  √2 (−1)^m P̄_l^|m| sin(|m|φ)
-#   (The `hydrogen/` prototype kept the CS phase in real mode; that is a global
-#   sign per orbital — invisible in |ψ| but it would flip lobe signs in the
-#   planned signed/diverging color mode, so we fix the convention here.)
+#   This convention makes signed/diverging color agree with textbook lobe
+#   orientation; a global sign is invisible in |ψ| but not in signed color.
 # • P̄ is 4π-orthonormalized: ∫ |P̄_l^m(cosθ) e^{imφ}|² dΩ = 1.
 # =============================================================================
 

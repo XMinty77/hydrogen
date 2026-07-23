@@ -2,7 +2,7 @@
   "name": "hydrogen-web",
   "version": "0.1.0",
   "private": true,
-  "description": "Interactive hydrogen-orbital visualizer (M5): Next.js static export over the shared GLSL ES renderer.",
+  "description": "Interactive hydrogen-orbital and probability-current visualizer over the shared GLSL ES renderer.",
   "scripts": {
     "predev": "node scripts/sync-assets.mjs",
     "dev": "next dev",
