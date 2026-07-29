@@ -40,6 +40,80 @@ canvas.view-fill {
   white-space: pre;
 }
 
+/* Loading screen (lib/loading-scene.ts): a self-contained miniature of the
+   renderer that holds the view until the baked asset and the shared shaders
+   have arrived and the first real frame is on the canvas. */
+
+.loading {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: #0b0513; /* the scene ramp's own base color */
+  transition: opacity 0.55s ease;
+}
+
+.loading-done {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.loading-view {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.loading-caption {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 8vh;
+  text-align: center;
+  color: #cbd8ed;
+  font: 11px/1.7 ui-monospace, "Cascadia Mono", monospace;
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.85);
+  pointer-events: none;
+}
+
+.loading-title {
+  color: #f0a832;
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.42em;
+  text-indent: 0.42em; /* balance the trailing letter-space */
+  text-transform: uppercase;
+}
+
+.loading-state {
+  color: #9fb2cf;
+  letter-spacing: 0.06em;
+}
+
+.loading-bar {
+  width: min(220px, 45vw);
+  height: 2px;
+  margin: 9px auto 6px;
+  background: rgba(203, 216, 237, 0.16);
+  border-radius: 1px;
+  overflow: hidden;
+}
+
+.loading-bar > i {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: linear-gradient(90deg, #a42e6c, #f98b28, #fffbe0);
+  transition: width 0.25s ease-out;
+}
+
+.loading-note {
+  color: #7e8ba3;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
 .flow-legend {
   position: fixed;
   left: 8px;

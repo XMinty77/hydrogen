@@ -115,8 +115,35 @@ export function parseHorb(buf: ArrayBuffer): HorbAsset {
   };
 }
 
-export async function loadHorb(url: string): Promise<HorbAsset> {
+/** Fetch and parse the asset. `onProgress` (bytes received so far) lets the
+ * loading screen report the download — the asset is tens of megabytes, so on a
+ * slow connection this is the only part of startup worth a progress readout. */
+export async function loadHorb(
+  url: string,
+  onProgress?: (loadedBytes: number) => void,
+): Promise<HorbAsset> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
-  return parseHorb(await res.arrayBuffer());
+  if (!onProgress || !res.body) return parseHorb(await res.arrayBuffer());
+
+  // Streamed read for the byte counter. Chunks are decompressed bytes, so the
+  // count is comparable to the asset's own size regardless of transfer
+  // encoding (Content-Length would be the compressed size).
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let loaded = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    loaded += value.byteLength;
+    onProgress(loaded);
+  }
+  const buf = new Uint8Array(loaded);
+  let at = 0;
+  for (const chunk of chunks) {
+    buf.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return parseHorb(buf.buffer);
 }

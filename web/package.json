@@ -8,6 +8,7 @@
     "dev": "next dev",
     "prebuild": "node scripts/sync-assets.mjs",
     "build": "next build",
+    "bake:loading": "node scripts/bake-loading.mjs",
     "shot": "node scripts/shot.mjs"
   },
   "dependencies": {

@@ -34,6 +34,8 @@ import { useEffect, useRef } from "react";
 import { CameraRig, type CameraPose } from "../lib/cameras";
 import { hexToSrgb } from "../lib/color";
 import { framingRadius, loadHorb } from "../lib/horb";
+import { LOADING_ASSET_BYTES } from "../lib/loading-asset";
+import { startLoadingScene } from "../lib/loading-scene";
 import { loadPalettes } from "../lib/palettes";
 import {
   applyUrlOverrides,
@@ -89,6 +91,9 @@ export default function OrbitalViewer() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const statsRef = useRef<HTMLDivElement>(null);
   const flowLegendRef = useRef<HTMLDivElement>(null);
+  const loadingRef = useRef<HTMLDivElement>(null);
+  const loadingNoteRef = useRef<HTMLDivElement>(null);
+  const loadingBarRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current!;
@@ -106,20 +111,63 @@ export default function OrbitalViewer() {
       cleanups.push(() => target.removeEventListener(type, fn));
     };
 
+    // ------------------------------------------------------- loading screen
+    // Started before anything is fetched: the overlay draws its own scene from
+    // ~7 KB of inlined tables (lib/loading-scene.ts) while the 16 MB asset and
+    // the shared shaders are still in flight.
+    const loadingEl = loadingRef.current!;
+    const loadingNoteEl = loadingNoteRef.current!;
+    const loadingBarEl = loadingBarRef.current!;
+    // The canvas is created here rather than in the JSX because disposing the
+    // scene releases its WebGL2 context, and a canvas element cannot hand out
+    // a second one — a remount (React strict mode) needs a fresh element.
+    const loadingCanvas = document.createElement("canvas");
+    loadingCanvas.className = "loading-view";
+    loadingEl.prepend(loadingCanvas);
+    const loadingScene = startLoadingScene(loadingCanvas);
+    let loadingTimer: number | undefined;
+    const loadingNote = (text: string, fraction?: number) => {
+      loadingNoteEl.textContent = text;
+      if (fraction !== undefined) loadingBarEl.style.width = `${fraction * 100}%`;
+    };
+    const endLoadingScreen = () => {
+      if (loadingEl.hidden || loadingEl.classList.contains("loading-done")) return;
+      loadingBarEl.style.width = "100%";
+      loadingEl.classList.add("loading-done"); // CSS fade
+      loadingTimer = window.setTimeout(() => {
+        loadingEl.hidden = true;
+        loadingScene?.dispose();
+        loadingCanvas.remove(); // its context is gone; keep no dead canvas around
+      }, 600);
+    };
+    cleanups.push(() => {
+      clearTimeout(loadingTimer);
+      loadingScene?.dispose();
+      loadingCanvas.remove();
+    });
+
     (async () => {
       const gl = canvas.getContext("webgl2", {
         antialias: false, // shader output is already dithered; MSAA is useless
         preserveDrawingBuffer: true, // PNG capture + screenshot harness
       });
       if (!gl) {
+        endLoadingScreen();
         statsEl.textContent = "WebGL2 unavailable in this browser.";
         return;
       }
 
+      loadingNote("fetching orbital tables", 0);
       const [asset, palettes] = await Promise.all([
-        loadHorb("generated/orbitals.bin"),
+        // LOADING_ASSET_BYTES is the asset's size at bake time; clamp in case
+        // a re-bake changed it without regenerating the loading module.
+        loadHorb("generated/orbitals.bin", (bytes) => {
+          const done = Math.min(1, bytes / LOADING_ASSET_BYTES);
+          loadingNote(`orbital tables · ${Math.round(100 * done)}%`, done);
+        }),
         loadPalettes("generated/palettes.json"),
       ]);
+      loadingNote("compiling shaders", 1);
       const renderer = await OrbitalRenderer.create(gl, asset, palettes, "generated/shaders");
       if (disposed) return;
 
@@ -1440,6 +1488,8 @@ export default function OrbitalViewer() {
             axesCamera, f * (params.axesGizmo ? 0.22 : 1000), f * 0.002,
           );
         }
+        // The first completed frame retires the loading screen (idempotent).
+        endLoadingScreen();
 
         if (captureActive) {
           captureFrames += 1;
@@ -1526,6 +1576,7 @@ export default function OrbitalViewer() {
       requestAnimationFrame(loop);
     })().catch((err) => {
       console.error(err);
+      endLoadingScreen();
       statsEl.textContent = `failed to start: ${err}`;
     });
 
@@ -1543,6 +1594,21 @@ export default function OrbitalViewer() {
         loading tables + shaders…
       </div>
       <div ref={flowLegendRef} className="flow-legend" hidden />
+      {/* Loading screen: its own renderer + baked data (lib/loading-scene.ts),
+          covering the app until the first real frame is on the canvas. */}
+      <div ref={loadingRef} className="loading">
+        {/* the canvas is prepended here by the effect */}
+        <div className="loading-caption">
+          <div className="loading-title">hydrogen</div>
+          <div className="loading-state">|1,0,0⟩ + |2,1,0⟩ · e^(−iEₙt)</div>
+          <div className="loading-bar">
+            <i ref={loadingBarRef} />
+          </div>
+          <div ref={loadingNoteRef} className="loading-note">
+            starting
+          </div>
+        </div>
+      </div>
     </>
   );
 }

@@ -17,6 +17,41 @@ npm run build
 copies `../assets/orbitals.bin`, `../assets/palettes.json`, and `../shaders/`
 into `public/generated/`. The production build is a static export in `out/`.
 
+## Loading screen
+
+`orbitals.bin` is 16 MB, so on a slow connection the app has nothing to show
+for a minute or more. `lib/loading-scene.ts` fills that window with the
+renderer's own output rather than a spinner: the time-evolving
+|1,0,0⟩ + |2,1,0⟩ superposition, isosurface-integrated and bloomed, viewed
+pole-on — the scene of
+
+```text
+?terms=1,0,0;2,1,0&time=1&timeScale=4&mode=real&color=signed&compress=asinh
+&ramp=custom&post=1&integrator=iso&shadeModel=ggx&camera=90,89,1.65
+```
+
+It is self-contained: one hard-coded fragment shader specialized to that URL
+(every parameter folded in as a GLSL constant, every unused branch removed),
+the three post passes, a ~250-line WebGL2 driver, and its own miniature asset.
+`scripts/bake-loading.mjs` produces that asset — `lib/loading-asset.ts`, the
+two radial and two angular tables the scene needs, resampled from the certified
+bake to 512 and 128 samples and inlined as base64 Float32 (~7 KB, worst
+residual 8e-5 of table peak). Nothing is fetched, and the whole package adds
+~14 KB gzipped to the viewer chunk, so the screen is drawing about two seconds
+into a 3 Mbit/s cold load that takes 75 seconds to complete.
+
+Because it is a specialization rather than a reimplementation, its picture
+matches the app's: rendered side by side at equal simulated time, mean absolute
+difference is 0.35/255 per channel, confined to shell silhouettes (the
+low-resolution tables) — below the output dither.
+
+Re-run the bake after re-baking `../assets/orbitals.bin`; the generated module
+is committed.
+
+```sh
+npm run bake:loading
+```
+
 ## Interface
 
 The main control panel is organized by intent:
@@ -233,3 +268,5 @@ real GPU path.
 - `lib/scene.ts`, `lib/cameras.ts` — plane geometry and navigation.
 - `lib/horb.ts`, `lib/palettes.ts`, `lib/color.ts` — assets and perceptual
   color support.
+- `lib/loading-scene.ts`, `lib/loading-asset.ts` — the standalone loading
+  screen and its baked tables (`scripts/bake-loading.mjs`).
