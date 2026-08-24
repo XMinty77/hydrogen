@@ -23,17 +23,32 @@ public sealed record SliceParams
     public required (double x, double y, double z) AxisV { get; init; }
 }
 
-public sealed class SliceRenderer(OffscreenGl ctx, HorbAsset asset, PaletteSet palettes)
+public class SliceRenderer(OffscreenGl ctx, HorbAsset asset, PaletteSet palettes)
     : OrbitalRenderer(ctx, asset, palettes, "slice.frag")
 {
     /// <summary>Render one slice; returns top-down RGBA8 bytes.</summary>
     public byte[] Render(SliceParams p)
+    {
+        UploadSlice(p);
+        return DrawAndRead(p.Common.Width, p.Common.Height);
+    }
+
+    /// <summary>Render one slice into a framebuffer the caller owns and keeps;
+    /// no allocation, no readback. The interop entry point.</summary>
+    public void RenderInto(uint framebuffer, SliceParams p)
+    {
+        UploadSlice(p);
+        DrawInto(framebuffer, p.Common.Width, p.Common.Height);
+    }
+
+    /// <summary>Bind the program and upload every uniform a slice needs,
+    /// without drawing.</summary>
+    protected void UploadSlice(SliceParams p)
     {
         UploadCommon(p.Common);
         var gl = Ctx.Gl;
         gl.Uniform3(Loc("uOrigin"), (float)p.Origin.x, (float)p.Origin.y, (float)p.Origin.z);
         gl.Uniform3(Loc("uAxisU"), (float)p.AxisU.x, (float)p.AxisU.y, (float)p.AxisU.z);
         gl.Uniform3(Loc("uAxisV"), (float)p.AxisV.x, (float)p.AxisV.y, (float)p.AxisV.z);
-        return DrawAndRead(p.Common.Width, p.Common.Height);
     }
 }

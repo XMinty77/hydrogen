@@ -52,6 +52,13 @@ public sealed record PathtraceParams
         Array.Empty<(double, double, double, double)>();
 }
 
+/// <remarks>
+/// Alone among the view renderers this one has no RenderInto: its Render is a
+/// multi-pass accumulation over two RGBA32F ping-pong targets allocated per
+/// call, and the useful interop shape for it is progressive — accumulate across
+/// calls and let the host resolve when it wants a frame — not one-shot. That is
+/// a different change from adding an entry point, so it is not made here.
+/// </remarks>
 public sealed class PathtraceRenderer : OrbitalRenderer
 {
     private readonly uint _displayProgram;
@@ -141,5 +148,12 @@ public sealed class PathtraceRenderer : OrbitalRenderer
         gl.DeleteTexture(texA);
         gl.DeleteTexture(texB);
         return pixels;
+    }
+
+    /// <inheritdoc/>
+    public override void Dispose()
+    {
+        Ctx.Gl.DeleteProgram(_displayProgram);
+        base.Dispose();
     }
 }

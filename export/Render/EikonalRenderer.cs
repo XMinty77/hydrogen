@@ -46,11 +46,27 @@ public sealed record EikonalParams
         Array.Empty<(double, double, double, double)>();
 }
 
-public sealed class EikonalRenderer(OffscreenGl ctx, HorbAsset asset, PaletteSet palettes)
+public class EikonalRenderer(OffscreenGl ctx, HorbAsset asset, PaletteSet palettes)
     : OrbitalRenderer(ctx, asset, palettes, "eikonal.frag")
 {
     /// <summary>Render one refraction frame; returns top-down RGBA8 bytes.</summary>
     public byte[] Render(EikonalParams p)
+    {
+        UploadEikonal(p);
+        return DrawAndRead(p.Common.Width, p.Common.Height);
+    }
+
+    /// <summary>Render one refraction frame into a framebuffer the caller owns
+    /// and keeps; no allocation, no readback. The interop entry point.</summary>
+    public void RenderInto(uint framebuffer, EikonalParams p)
+    {
+        UploadEikonal(p);
+        DrawInto(framebuffer, p.Common.Width, p.Common.Height);
+    }
+
+    /// <summary>Bind the program and upload every uniform a refraction frame
+    /// needs, without drawing.</summary>
+    protected void UploadEikonal(EikonalParams p)
     {
         UploadCommon(p.Common);
         UploadCamera(p.CamPos, p.CamRight, p.CamUp, p.CamFwd, p.FovYDeg,
@@ -68,6 +84,5 @@ public sealed class EikonalRenderer(OffscreenGl ctx, HorbAsset asset, PaletteSet
         gl.Uniform1(Loc("uEnvMode"), p.EnvMode);
         gl.Uniform1(Loc("uEnvGain"), (float)p.EnvGain);
         gl.Uniform1(Loc("uGradDelta"), (float)p.GradDelta);
-        return DrawAndRead(p.Common.Width, p.Common.Height);
     }
 }

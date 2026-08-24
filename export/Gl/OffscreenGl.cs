@@ -2,10 +2,20 @@
 // OffscreenGl.cs — the GL foundation of the export host.
 // =============================================================================
 //
-// Owns an invisible GLFW window (context only; nothing is ever shown), and
-// provides the small set of primitives every render pass needs: shader
-// assembly from the shared shaders/ directory, float-table textures,
-// offscreen render targets, and PNG-ready pixel readback.
+// Provides the small set of primitives every render pass needs: shader
+// assembly from the shared shaders/ directory, float-table textures, offscreen
+// render targets, and PNG-ready pixel readback.
+//
+// The context underneath comes from one of two places:
+//
+//   * new OffscreenGl(shaderDir)  — this class creates and owns an invisible
+//     GLFW window (context only; nothing is ever shown). This is what the CLI
+//     uses.
+//   * new OffscreenGl(gl, shaderDir) — the context already exists and belongs
+//     to someone else: an engine, a compositor, a test harness. Everything
+//     above this class then works unchanged on that context, which is the only
+//     way to hand a rendered texture to another API (a wrapper can only see a
+//     texture that lives on its own context).
 //
 // Shader assembly contract (mirrored by the web host): a fragment shader is
 // the concatenation  prelude.glsl + common.glsl + <view>.frag  — GLSL ES 3.00
@@ -21,10 +31,24 @@ namespace Hydrogen.Export.Gl;
 
 public sealed class OffscreenGl : IDisposable
 {
-    private readonly IWindow _window;
+    /// <summary>The window this class created, or null when the context was
+    /// supplied by a host (in which case nothing here owns it).</summary>
+    private readonly IWindow? _window;
+
     public GL Gl { get; }
     public string ShaderDir { get; }
 
+    /// <summary>The vertex array object every bufferless draw runs under.
+    /// Core profile requires one to be bound even when the draw sources no
+    /// attributes; see <see cref="RestoreState"/>.</summary>
+    public uint Vao { get; }
+
+    /// <summary>True when this instance created the GL context and will
+    /// destroy it on Dispose.</summary>
+    public bool OwnsContext => _window is not null;
+
+    /// <summary>Create a private offscreen context on an invisible GLFW window
+    /// and make it current on the calling thread.</summary>
     public OffscreenGl(string shaderDir)
     {
         ShaderDir = shaderDir;
@@ -43,8 +67,61 @@ public sealed class OffscreenGl : IDisposable
             Console.Error.WriteLine(
                 $"warning: GL context is on '{renderer}', not the NVIDIA GPU");
 
+        Vao = Gl.GenVertexArray();
+        RestoreState();
+    }
+
+    /// <summary>Adopt a GL context that already exists and belongs to someone
+    /// else — an engine, a compositor, a test harness.</summary>
+    /// <param name="gl">A binding for a context that is current on the calling
+    /// thread. It stays current for the lifetime of every renderer built over
+    /// this instance; nothing here makes a context current or moves one
+    /// between threads.</param>
+    /// <param name="shaderDir">The shaders/ directory to assemble GLSL from.</param>
+    /// <remarks>
+    /// <para>
+    /// The host keeps ownership: <see cref="Dispose"/> deletes only the objects
+    /// this class created, never the context.
+    /// </para>
+    /// <para>
+    /// There is no renderer warning on this path. The CLI warns when it lands
+    /// on something other than the NVIDIA GPU because it picked the context and
+    /// could have picked wrong; a host that supplies its own has already made
+    /// that decision deliberately.
+    /// </para>
+    /// <para>
+    /// Constructing this <em>does</em> mutate the context: it binds a VAO and
+    /// sets both pixel-store alignments (see <see cref="RestoreState"/>). Any
+    /// host sharing the context with another library must expect that, and must
+    /// call <see cref="RestoreState"/> again before each hydrogen pass.
+    /// </para>
+    /// </remarks>
+    public OffscreenGl(GL gl, string shaderDir)
+    {
+        ArgumentNullException.ThrowIfNull(gl);
+        Gl = gl;
+        ShaderDir = shaderDir;
+        _window = null;
+        Vao = Gl.GenVertexArray();
+        RestoreState();
+    }
+
+    /// <summary>Re-establish the two pieces of context-wide state every draw and
+    /// upload in this library assumes.</summary>
+    /// <remarks>
+    /// Both are set once at construction and then simply relied upon, which is
+    /// safe while hydrogen is the only thing touching the context. It is not
+    /// safe when the context is shared: Skia/Ganesh, Qt, ImGui and friends all
+    /// unbind the vertex array and reset the pixel store. A shared-context host
+    /// should call this immediately before each hydrogen pass — it is two GL
+    /// calls and a bind, and the failure it prevents (an INVALID_OPERATION draw,
+    /// or a row-misaligned table upload that quietly produces a plausible but
+    /// wrong image) is expensive to diagnose.
+    /// </remarks>
+    public void RestoreState()
+    {
         // Core profile requires a bound VAO even for bufferless draws.
-        Gl.BindVertexArray(Gl.GenVertexArray());
+        Gl.BindVertexArray(Vao);
         // Table/readback rows are tightly packed; don't let 4-byte row
         // alignment corrupt odd-width uploads.
         Gl.PixelStore(PixelStoreParameter.UnpackAlignment, 1);
@@ -173,6 +250,13 @@ public sealed class OffscreenGl : IDisposable
     /// The target texture is bound on a reserved scratch unit so creating a
     /// render target can never silently replace a sampler binding made by a
     /// renderer (units 0–2 carry the orbital/palette tables).</summary>
+    /// <remarks>
+    /// The texture is left sampler-complete — LINEAR, clamped, no mipmaps — so
+    /// it can be handed to another API and sampled, not merely read back. The
+    /// default GL sampler state (NEAREST_MIPMAP_LINEAR, REPEAT) would make a
+    /// mipmap-less texture incomplete and sample as black; the CLI never
+    /// noticed because it only ever calls ReadPixels on it.
+    /// </remarks>
     public unsafe (uint fbo, uint tex) CreateRenderTarget(int width, int height)
     {
         uint fbo = Gl.GenFramebuffer();
@@ -183,6 +267,14 @@ public sealed class OffscreenGl : IDisposable
         Gl.TexImage2D(TextureTarget.Texture2D, 0, InternalFormat.Rgba8,
                       (uint)width, (uint)height, 0, PixelFormat.Rgba,
                       PixelType.UnsignedByte, null);
+        Gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter,
+                        (int)TextureMinFilter.Linear);
+        Gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter,
+                        (int)TextureMagFilter.Linear);
+        Gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS,
+                        (int)TextureWrapMode.ClampToEdge);
+        Gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT,
+                        (int)TextureWrapMode.ClampToEdge);
         Gl.FramebufferTexture2D(FramebufferTarget.Framebuffer,
                                 FramebufferAttachment.ColorAttachment0,
                                 TextureTarget.Texture2D, tex, 0);
@@ -206,5 +298,18 @@ public sealed class OffscreenGl : IDisposable
         return flipped;
     }
 
-    public void Dispose() => _window.Dispose();
+    /// <summary>Release what this instance created. When it owns the context,
+    /// that means the window (which takes the context and everything on it with
+    /// it). When the context was adopted, only the VAO is deleted, and the
+    /// context must still be current on the calling thread.</summary>
+    public void Dispose()
+    {
+        if (_window is not null)
+        {
+            _window.Dispose();
+            return;
+        }
+
+        Gl.DeleteVertexArray(Vao);
+    }
 }

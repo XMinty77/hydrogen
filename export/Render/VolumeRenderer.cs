@@ -93,11 +93,37 @@ public sealed record VolumeParams
         Array.Empty<(double, double, double, double)>();
 }
 
-public sealed class VolumeRenderer(OffscreenGl ctx, HorbAsset asset, PaletteSet palettes)
+/// <remarks>
+/// Not sealed: the uniform block below is the only thing that distinguishes a
+/// volumetric pass from any other, so a host that wants to add uniforms of its
+/// own — a custom view shader over the same integrators, an overlay pass — must
+/// be able to reach <see cref="UploadVolume"/> and add to what it uploads
+/// rather than re-deriving from OrbitalRenderer and transcribing it. A
+/// transcribed copy of a 35-uniform block silently stops matching the first
+/// time a uniform is added here.
+/// </remarks>
+public class VolumeRenderer(OffscreenGl ctx, HorbAsset asset, PaletteSet palettes)
     : OrbitalRenderer(ctx, asset, palettes, "volume.frag")
 {
     /// <summary>Render one volumetric frame; returns top-down RGBA8 bytes.</summary>
     public byte[] Render(VolumeParams p)
+    {
+        UploadVolume(p);
+        return DrawAndRead(p.Common.Width, p.Common.Height);
+    }
+
+    /// <summary>Render one volumetric frame into a framebuffer the caller owns
+    /// and keeps; no allocation, no readback. The interop entry point.</summary>
+    public void RenderInto(uint framebuffer, VolumeParams p)
+    {
+        UploadVolume(p);
+        DrawInto(framebuffer, p.Common.Width, p.Common.Height);
+    }
+
+    /// <summary>Bind the program and upload every uniform a volumetric frame
+    /// needs — common, camera, and the integrator/transfer/lighting block —
+    /// without drawing.</summary>
+    protected void UploadVolume(VolumeParams p)
     {
         UploadCommon(p.Common);
         UploadCamera(p.CamPos, p.CamRight, p.CamUp, p.CamFwd, p.FovYDeg,
@@ -145,7 +171,5 @@ public sealed class VolumeRenderer(OffscreenGl ctx, HorbAsset asset, PaletteSet 
         gl.Uniform1(Loc("uShadeF0"), (float)p.ShadeF0);
         gl.Uniform1(Loc("uShadeConf"), (float)p.ShadeConf);
         gl.Uniform1(Loc("uGradDelta"), (float)p.GradDelta);
-
-        return DrawAndRead(p.Common.Width, p.Common.Height);
     }
 }

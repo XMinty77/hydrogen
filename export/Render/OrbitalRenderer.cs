@@ -85,7 +85,7 @@ public record CommonParams
     public bool OkPhaseSigned { get; init; } = false;
 }
 
-public abstract class OrbitalRenderer
+public abstract class OrbitalRenderer : IDisposable
 {
     protected readonly OffscreenGl Ctx;
     protected readonly HorbAsset Asset;
@@ -112,6 +112,19 @@ public abstract class OrbitalRenderer
     }
 
     protected int Loc(string name) => Ctx.Gl.GetUniformLocation(Program, name);
+
+    /// <summary>The linked location of a uniform in this renderer's program, or
+    /// −1 when the linker eliminated it.</summary>
+    /// <remarks>
+    /// Public so a host can audit the uniforms it drives. glUniform*(−1, …) is a
+    /// specified silent no-op, so a uniform dropped by a shader edit becomes a
+    /// dead control with no error and an image that still looks plausible —
+    /// which, with ~80 uniforms declared across prelude + common + a view
+    /// shader, is the most likely way this renderer goes quietly wrong. Some
+    /// uniforms are legitimately dead in some configurations, so this reports
+    /// rather than throws; deciding which absences matter is the caller's.
+    /// </remarks>
+    public int UniformLocation(string name) => Loc(name);
 
     /// <summary>Framing radius covering the state — or every superposition
     /// term (drives cameras/extents exactly like the web host).</summary>
@@ -298,18 +311,61 @@ public abstract class OrbitalRenderer
         gl.Uniform1(Loc("uClipCount"), clipPlanes.Count);
     }
 
+    /// <summary>Draw the fullscreen triangle into a framebuffer the caller owns
+    /// and keeps. Nothing is allocated, read back, or deleted.</summary>
+    /// <param name="framebuffer">The target FBO. 0 is the default framebuffer.</param>
+    /// <remarks>
+    /// This is the interop half of <see cref="DrawAndRead"/>. A host that hands
+    /// its texture to another API needs the texture to persist across frames and
+    /// the pixels to stay on the GPU, so allocating a target, reading it back
+    /// and deleting it every frame — which is exactly the right thing for a CLI
+    /// writing a PNG — is exactly the wrong thing for it. Uniforms must already
+    /// be uploaded; the view renderers' RenderInto methods do both.
+    /// </remarks>
+    protected void DrawInto(uint framebuffer, int width, int height)
+    {
+        var gl = Ctx.Gl;
+        gl.BindFramebuffer(FramebufferTarget.Framebuffer, framebuffer);
+        gl.Viewport(0, 0, (uint)width, (uint)height);
+        gl.DrawArrays(PrimitiveType.Triangles, 0, 3);
+    }
+
     /// <summary>Render the bound program into a fresh target and read it back
     /// (top-down RGBA8).</summary>
     protected byte[] DrawAndRead(int width, int height)
     {
         var gl = Ctx.Gl;
         var (fbo, tex) = Ctx.CreateRenderTarget(width, height);
-        gl.Viewport(0, 0, (uint)width, (uint)height);
-        gl.DrawArrays(PrimitiveType.Triangles, 0, 3);
+        DrawInto(fbo, width, height);
         var pixels = Ctx.ReadPixelsTopDown(width, height);
         gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
         gl.DeleteFramebuffer(fbo);
         gl.DeleteTexture(tex);
         return pixels;
+    }
+
+    /// <summary>Delete the program and the table textures this renderer created.
+    /// The context must be current on the calling thread.</summary>
+    /// <remarks>
+    /// The CLI does not need this — it exits, and the context goes with it. A
+    /// host that outlives its renderers does: a renderer holds a linked program
+    /// plus one R32F texture per (n,l) and (l,|m|) it has been asked for, and
+    /// leaking those across a long-lived session adds up.
+    /// </remarks>
+    public virtual void Dispose()
+    {
+        var gl = Ctx.Gl;
+        gl.DeleteProgram(Program);
+        gl.DeleteTexture(_phaseCmaxTex);
+        foreach (uint tex in _radialTex.Values) gl.DeleteTexture(tex);
+        foreach (uint tex in _angularTex.Values) gl.DeleteTexture(tex);
+        _radialTex.Clear();
+        _angularTex.Clear();
+        if (_supRadialTex != 0) gl.DeleteTexture(_supRadialTex);
+        if (_supAngularTex != 0) gl.DeleteTexture(_supAngularTex);
+        _supRadialTex = 0;
+        _supAngularTex = 0;
+        _supKey = "";
+        GC.SuppressFinalize(this);
     }
 }
