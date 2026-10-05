@@ -40,9 +40,8 @@ canvas.view-fill {
   white-space: pre;
 }
 
-/* Loading screen (lib/loading-scene.ts): a self-contained miniature of the
-   renderer that holds the view until the baked asset and the shared shaders
-   have arrived and the first real frame is on the canvas. */
+/* The loading shell is prerendered HTML/CSS. It must never require a GPU
+   context or shader compilation while the real renderer starts. */
 
 .loading {
   position: fixed;
@@ -57,12 +56,23 @@ canvas.view-fill {
   pointer-events: none;
 }
 
-.loading-view {
+.loading-art {
   position: absolute;
   inset: 0;
-  width: 100%;
-  height: 100%;
-  display: block;
+  background:
+    radial-gradient(ellipse at 50% 45%, rgba(249, 139, 40, 0.15), transparent 32%),
+    radial-gradient(ellipse at 50% 50%, rgba(164, 46, 108, 0.18), transparent 48%);
+}
+
+.loading-orbital {
+  position: absolute;
+  left: 50%;
+  top: 45%;
+  width: min(70vmin, 640px);
+  height: auto;
+  transform: translate(-50%, -50%);
+  mix-blend-mode: screen;
+  mask-image: radial-gradient(ellipse at center, #000 38%, transparent 70%);
 }
 
 .loading-caption {

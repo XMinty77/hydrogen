@@ -22,6 +22,7 @@ import {
   type HorbAsset,
 } from "./horb";
 import type { PaletteSet, Ramp } from "./palettes";
+import { Programs, type ProgramSpec } from "./programs";
 import { effectiveQ999, MAX_TERMS, type SuperTerm } from "./superposition";
 import type { Vec3 } from "./vec3";
 
@@ -339,12 +340,6 @@ export interface PostProcessParams {
 
 const MAX_STOPS = 8;
 
-async function fetchText(url: string): Promise<string> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
-  return res.text();
-}
-
 function lightDirOf(l: LightParams): Vec3 {
   const az = (l.lightAzDeg * Math.PI) / 180;
   const el = (l.lightElDeg * Math.PI) / 180;
@@ -416,101 +411,118 @@ export class OrbitalRenderer {
 
   /** True when RGBA32F render targets are supported (EXT_color_buffer_float). */
   readonly floatRenderable: boolean;
+  private readonly maxTextureSize: number;
+  private readonly programs: Programs;
+  private disposed = false;
+
+  private get slicePi() { return this.programs.get("slice"); }
+  private get volumePi() { return this.programs.get("volume"); }
+  private get pathtracePi() { return this.programs.get("pathtrace"); }
+  private get eikonalPi() { return this.programs.get("eikonal"); }
+  private get displayPi() { return this.programs.get("display"); }
+  private get axesPi() { return this.programs.get("axes"); }
+  private get flowUpdatePi() { return this.programs.get("flow_update"); }
+  private get flowParticlesPi() { return this.programs.get("flow_particles"); }
+  private get flowDecayPi() { return this.programs.get("flow_decay"); }
+  private get flowCompositePi() { return this.programs.get("flow_composite"); }
+  private get flowInkUpdatePi() { return this.programs.get("flow_ink_update"); }
+  private get flowInkDisplayPi() { return this.programs.get("flow_ink_display"); }
+  private get flowVolumeUpdatePi() { return this.programs.get("flow_volume_update"); }
+  private get flowVolumeCorrectPi() { return this.programs.get("flow_volume_correct"); }
+  private get flowVolumeRenderPi() { return this.programs.get("flow_volume_render"); }
+  private get postBloomExtractPi() { return this.programs.get("post_bloom_extract"); }
+  private get postBloomBlurPi() { return this.programs.get("post_bloom_blur"); }
+  private get postCompositePi() { return this.programs.get("post_composite"); }
 
   private constructor(
     readonly gl: WebGL2RenderingContext,
     readonly asset: HorbAsset,
     readonly palettes: PaletteSet,
-    private readonly slicePi: twgl.ProgramInfo,
-    private readonly volumePi: twgl.ProgramInfo,
-    private readonly pathtracePi: twgl.ProgramInfo,
-    private readonly eikonalPi: twgl.ProgramInfo,
-    private readonly displayPi: twgl.ProgramInfo,
-    private readonly axesPi: twgl.ProgramInfo,
-    private readonly flowUpdatePi: twgl.ProgramInfo,
-    private readonly flowParticlesPi: twgl.ProgramInfo,
-    private readonly flowDecayPi: twgl.ProgramInfo,
-    private readonly flowCompositePi: twgl.ProgramInfo,
-    private readonly flowInkUpdatePi: twgl.ProgramInfo,
-    private readonly flowInkDisplayPi: twgl.ProgramInfo,
-    private readonly flowVolumeUpdatePi: twgl.ProgramInfo,
-    private readonly flowVolumeCorrectPi: twgl.ProgramInfo,
-    private readonly flowVolumeRenderPi: twgl.ProgramInfo,
-    private readonly postBloomExtractPi: twgl.ProgramInfo,
-    private readonly postBloomBlurPi: twgl.ProgramInfo,
-    private readonly postCompositePi: twgl.ProgramInfo,
+    shaderBase: string,
   ) {
+    this.programs = new Programs(gl, shaderBase);
     this.phaseCmaxTex = this.createTableTexture(palettes.phaseCmax);
     this.floatRenderable = gl.getExtension("EXT_color_buffer_float") !== null;
+    this.maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
   }
 
-  /** Fetch the shared shader sources and compile all view programs. */
+  /** Programs are prepared on demand, before the frame that uses them. */
   static async create(
     gl: WebGL2RenderingContext,
     asset: HorbAsset,
     palettes: PaletteSet,
     shaderBase: string,
   ): Promise<OrbitalRenderer> {
-    const files = [
-      "fullscreen.vert",
-      "prelude.glsl",
-      "common.glsl",
-      "slice.frag",
-      "volume.frag",
-      "pathtrace.frag",
-      "eikonal.frag",
-      "display.frag",
-      "axes.frag",
-      "flow_update.frag",
-      "flow_particles.vert",
-      "flow_particles.frag",
-      "flow_decay.frag",
-      "flow_composite.frag",
-      "flow_ink_update.frag",
-      "flow_ink_display.frag",
-      "flow_volume_update.frag",
-      "flow_volume_correct.frag",
-      "flow_volume_render.frag",
-      "post_bloom_extract.frag",
-      "post_bloom_blur.frag",
-      "post_composite.frag",
-    ];
-    const [vert, prelude, common, slice, volume, pathtrace, eikonal, display, axes,
-      flowUpdate, flowParticlesVert, flowParticles, flowDecay, flowComposite,
-      flowInkUpdate, flowInkDisplay, flowVolumeUpdate, flowVolumeCorrect,
-      flowVolumeRender, postBloomExtract, postBloomBlur, postComposite] =
-      await Promise.all(files.map((f) => fetchText(`${shaderBase}/${f}`)));
-    // View shaders share prelude + common; the axes overlay needs neither the
-    // ψ machinery nor common's uniforms, so it compiles against prelude alone.
-    const compile = (viewFrag: string, withCommon = true) => {
-      const src = withCommon ? prelude + common + viewFrag : prelude + viewFrag;
-      const pi = twgl.createProgramInfo(gl, [vert, src]);
-      if (!pi) throw new Error("shader compile/link failed (see console)");
-      return pi;
-    };
-    return new OrbitalRenderer(
-      gl,
-      asset,
-      palettes,
-      compile(slice),
-      compile(volume),
-      compile(pathtrace),
-      compile(eikonal),
-      compile(display),
-      compile(axes, false),
-      compile(flowUpdate),
-      twgl.createProgramInfo(gl, [flowParticlesVert, prelude + common + flowParticles]),
-      compile(flowDecay, false),
-      compile(flowComposite),
-      compile(flowInkUpdate),
-      compile(flowInkDisplay),
-      compile(flowVolumeUpdate),
-      compile(flowVolumeCorrect),
-      compile(flowVolumeRender),
-      compile(postBloomExtract, false),
-      compile(postBloomBlur, false),
-      compile(postComposite, false),
-    );
+    return new OrbitalRenderer(gl, asset, palettes, shaderBase);
+  }
+
+  prepare(p: {
+    view: "slice" | "volume";
+    technique: string;
+    integrator: number;
+    shadeModel: number;
+    superposition: boolean;
+    axes: boolean;
+    flow: "none" | "ink" | "particles" | "volume";
+    derivative: number;
+    flowIntegrator: number;
+    correction: boolean;
+    post: boolean;
+    bloom: boolean;
+  }): Promise<void> | null {
+    // Disabled features should not keep high-resolution history textures alive.
+    if (p.view !== "volume" || p.technique !== "pathtrace") {
+      this.deleteFramebufferPair(this.accumFbi);
+      this.accumFbi = null;
+    }
+    if (p.flow !== "particles") {
+      this.deleteFramebufferPair(this.flowStateFbi);
+      this.deleteFramebufferPair(this.flowTrailFbi);
+      this.flowStateFbi = this.flowTrailFbi = null;
+    }
+    if (p.flow !== "ink") {
+      this.deleteFramebufferPair(this.flowInkFbi);
+      this.flowInkFbi = null;
+    }
+    if (p.flow !== "volume") {
+      this.deleteFramebufferPair(this.flowVolumeFbi);
+      this.flowVolumeFbi = null;
+    }
+    if (!p.post) {
+      if (this.postSceneFbi) this.deleteFramebufferInfo(this.postSceneFbi);
+      this.postSceneFbi = this.presentationTarget = null;
+    }
+    if (!p.post || !p.bloom) {
+      this.deleteFramebufferPair(this.postBloomFbi);
+      this.postBloomFbi = null;
+    }
+    const field: Record<string, number> = p.superposition ? {} : { uSupCount: 0 };
+    const specs: ProgramSpec[] = [];
+    const add = (name: string, constants = field) => specs.push({ name, constants });
+    if (p.view === "slice") add("slice");
+    else if (p.technique === "pathtrace") { add("pathtrace"); add("display"); }
+    else if (p.technique === "eikonal") add("eikonal");
+    else add("volume", { ...field, uIntegrator: p.integrator, uShadeModel: p.shadeModel });
+    if (p.axes && p.view === "volume") add("axes", {});
+    const transport = { ...field, uCurrentDerivative: p.derivative, uFlowIntegrator: p.flowIntegrator };
+    if (p.flow === "ink") {
+      add("flow_ink_update", transport);
+      add("flow_ink_display", transport);
+    } else if (p.flow === "particles") {
+      add("flow_update", transport);
+      add("flow_particles");
+      add("flow_decay", {});
+      add("flow_composite");
+    } else if (p.flow === "volume") {
+      add("flow_volume_update", transport);
+      if (p.correction) add("flow_volume_correct", transport);
+      add("flow_volume_render", transport);
+    }
+    if (p.post) {
+      if (p.bloom) { add("post_bloom_extract", {}); add("post_bloom_blur", {}); }
+      add("post_composite", {});
+    }
+    return this.programs.prepare(specs);
   }
 
   /** R32F width×1 table texture, NEAREST/CLAMP — the same layout the C# host
@@ -546,8 +558,8 @@ export class OrbitalRenderer {
 
     const rad0 = this.asset.radial.values().next().value!;
     const ang0 = this.asset.angular.values().next().value!;
-    const radW = rad0.values.length;
-    const angW = ang0.values.length;
+    const radW = this.asset.radialSamples ?? rad0.values.length;
+    const angW = this.asset.angularSamples ?? ang0.values.length;
     const radData = new Float32Array(radW * MAX_TERMS);
     const angData = new Float32Array(angW * MAX_TERMS);
     this.supRMax.fill(1);
@@ -864,7 +876,7 @@ export class OrbitalRenderer {
   }
 
   private ensureFlowState(side: number) {
-    side = Math.max(8, Math.round(side));
+    side = Math.max(8, Math.min(512, this.maxTextureSize, Math.round(side)));
     if (this.flowStateFbi && side === this.flowStateSide) return;
     this.deleteFramebufferPair(this.flowStateFbi);
     const gl = this.gl;
@@ -937,8 +949,8 @@ export class OrbitalRenderer {
 
   private ensureFlowVolume(grid: number) {
     const gl = this.gl;
-    const maxTexture = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
-    grid = Math.max(12, Math.round(grid));
+    const maxTexture = this.maxTextureSize;
+    grid = Math.max(12, Math.min(128, Math.round(grid)));
     let tilesX = Math.ceil(Math.sqrt(grid));
     let tilesY = Math.ceil(grid / tilesX);
     // The UI stays far below this on normal hardware, but clamp defensively so
@@ -1376,6 +1388,7 @@ export class OrbitalRenderer {
 
   private ensureAccum(w: number, h: number) {
     if (this.accumFbi && this.accumW === w && this.accumH === h) return;
+    this.deleteFramebufferPair(this.accumFbi);
     const gl = this.gl;
     const attach = [
       {
@@ -1393,7 +1406,24 @@ export class OrbitalRenderer {
     ];
     this.accumW = w;
     this.accumH = h;
+    this.accumRead = 0;
     this.resetAccum();
+  }
+
+  /** Release GPU memory on unmount, including development strict-mode mounts. */
+  dispose() {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.programs.dispose();
+    for (const texture of [...this.radialTex.values(), ...this.angularTex.values(),
+      this.phaseCmaxTex, this.supRadialTex, this.supAngularTex]) {
+      if (texture) this.gl.deleteTexture(texture);
+    }
+    for (const pair of [this.accumFbi, this.flowStateFbi, this.flowTrailFbi,
+      this.flowInkFbi, this.flowVolumeFbi, this.postBloomFbi]) this.deleteFramebufferPair(pair);
+    if (this.postSceneFbi) this.deleteFramebufferInfo(this.postSceneFbi);
+    this.radialTex.clear();
+    this.angularTex.clear();
   }
 
   pathtraceSample(p: PathtraceParams) {

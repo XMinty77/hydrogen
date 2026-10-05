@@ -9,7 +9,10 @@
     "prebuild": "node scripts/sync-assets.mjs",
     "build": "next build",
     "bake:loading": "node scripts/bake-loading.mjs",
-    "shot": "node scripts/shot.mjs"
+    "shot": "node scripts/shot.mjs",
+    "perf": "node scripts/perf.mjs",
+    "check:renderer": "node scripts/check-renderer.mjs",
+    "check:assets": "node --experimental-strip-types scripts/check-assets.mjs"
   },
   "dependencies": {
     "lil-gui": "^0.20.0",

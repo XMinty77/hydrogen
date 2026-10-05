@@ -45,6 +45,10 @@ export interface HorbAsset {
   radial: Map<string, RadialTable>; // key `${n},${l}`
   angular: Map<string, AngularTable>; // key `${l},${|m|}`
   stats: Map<string, DisplayStats>; // key `${n},${l},${|m|},${"real"|"complex"}`
+  radialSamples?: number;
+  angularSamples?: number;
+  /** Indexed web assets fetch tables only when their states are selected. */
+  ensureTables?: (states: { n: number; l: number; m: number }[]) => Promise<void> | null;
 }
 
 export const radialKey = (n: number, l: number) => `${n},${l}`;
@@ -146,4 +150,61 @@ export async function loadHorb(
     at += chunk.byteLength;
   }
   return parseHorb(buf.buffer);
+}
+
+/** Small catalog + exact per-table files generated from the same HORB bake. */
+export async function loadHorbIndex(url: string, signal?: AbortSignal): Promise<HorbAsset> {
+  const response = await fetch(url, { signal });
+  if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
+  const index: {
+    nMax: number;
+    extent: { factor: number; pad: number };
+    radialSamples: number;
+    angularSamples: number;
+    radial: number[][];
+    angular: number[][];
+    stats: number[][];
+  } = await response.json();
+  const asset: HorbAsset = {
+    nMax: index.nMax, extentFactor: index.extent.factor, extentPad: index.extent.pad,
+    radialSamples: index.radialSamples, angularSamples: index.angularSamples,
+    radial: new Map(), angular: new Map(), stats: new Map(),
+  };
+  for (const [n, l, rMax] of index.radial)
+    asset.radial.set(radialKey(n, l), { n, l, rMax, values: new Float32Array(0) });
+  for (const [l, m] of index.angular)
+    asset.angular.set(angularKey(l, m), { l, m, values: new Float32Array(0) });
+  for (const [n, l, m, real, maxDensity, q999, q9999] of index.stats)
+    asset.stats.set(statsKey(n, l, m, real === 1), { maxDensity, q999, q9999 });
+
+  const base = url.slice(0, url.lastIndexOf("/") + 1);
+  const pending = new Map<string, Promise<void>>();
+  const ensure = (table: RadialTable | AngularTable, file: string, samples: number) => {
+    if (table.values.length) return null;
+    let request = pending.get(file);
+    if (!request) {
+      request = fetch(`${base}tables/${file}`, { signal }).then(async (res) => {
+        if (!res.ok) throw new Error(`${file}: HTTP ${res.status}`);
+        const buf = await res.arrayBuffer();
+        if (buf.byteLength !== samples * 4) throw new Error(`${file}: invalid table length`);
+        table.values = new Float32Array(buf);
+      }).finally(() => pending.delete(file));
+      pending.set(file, request);
+    }
+    return request;
+  };
+  asset.ensureTables = (states) => {
+    const requests = new Set<Promise<void>>();
+    for (const { n, l, m } of states) {
+      const radial = asset.radial.get(radialKey(n, l));
+      const angular = asset.angular.get(angularKey(l, m));
+      if (!radial || !angular) throw new Error(`no tables for (${n},${l},${m})`);
+      const r = ensure(radial, `r-${n}-${l}.bin`, index.radialSamples);
+      const a = ensure(angular, `a-${l}-${Math.abs(m)}.bin`, index.angularSamples);
+      if (r) requests.add(r);
+      if (a) requests.add(a);
+    }
+    return requests.size ? Promise.all(requests).then(() => {}) : null;
+  };
+  return asset;
 }

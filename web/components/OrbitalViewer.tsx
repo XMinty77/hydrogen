@@ -33,9 +33,7 @@ import GUI from "lil-gui";
 import { useEffect, useRef } from "react";
 import { CameraRig, type CameraPose } from "../lib/cameras";
 import { hexToSrgb } from "../lib/color";
-import { framingRadius, loadHorb } from "../lib/horb";
-import { LOADING_ASSET_BYTES } from "../lib/loading-asset";
-import { startLoadingScene } from "../lib/loading-scene";
+import { framingRadius, loadHorbIndex } from "../lib/horb";
 import { loadPalettes } from "../lib/palettes";
 import {
   applyUrlOverrides,
@@ -91,15 +89,13 @@ export default function OrbitalViewer() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const statsRef = useRef<HTMLDivElement>(null);
   const flowLegendRef = useRef<HTMLDivElement>(null);
-  const loadingRef = useRef<HTMLDivElement>(null);
-  const loadingNoteRef = useRef<HTMLDivElement>(null);
-  const loadingBarRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current!;
     const statsEl = statsRef.current!;
     const flowLegendEl = flowLegendRef.current!;
     let disposed = false;
+    let contextLost = false;
     const cleanups: (() => void)[] = [];
     const on = (
       target: Window | Document | HTMLElement,
@@ -112,19 +108,13 @@ export default function OrbitalViewer() {
     };
 
     // ------------------------------------------------------- loading screen
-    // Started before anything is fetched: the overlay draws its own scene from
-    // ~7 KB of inlined tables (lib/loading-scene.ts) while the 16 MB asset and
-    // the shared shaders are still in flight.
-    const loadingEl = loadingRef.current!;
-    const loadingNoteEl = loadingNoteRef.current!;
-    const loadingBarEl = loadingBarRef.current!;
-    // The canvas is created here rather than in the JSX because disposing the
-    // scene releases its WebGL2 context, and a canvas element cannot hand out
-    // a second one — a remount (React strict mode) needs a fresh element.
-    const loadingCanvas = document.createElement("canvas");
-    loadingCanvas.className = "loading-view";
-    loadingEl.prepend(loadingCanvas);
-    const loadingScene = startLoadingScene(loadingCanvas);
+    const loadingEl = document.getElementById("loading")!;
+    const loadingNoteEl = document.getElementById("loading-note")!;
+    const loadingBarEl = document.getElementById("loading-bar")!;
+    loadingEl.hidden = false;
+    loadingEl.classList.remove("loading-done");
+    const abort = new AbortController();
+    let raf = 0;
     let loadingTimer: number | undefined;
     const loadingNote = (text: string, fraction?: number) => {
       loadingNoteEl.textContent = text;
@@ -136,40 +126,46 @@ export default function OrbitalViewer() {
       loadingEl.classList.add("loading-done"); // CSS fade
       loadingTimer = window.setTimeout(() => {
         loadingEl.hidden = true;
-        loadingScene?.dispose();
-        loadingCanvas.remove(); // its context is gone; keep no dead canvas around
       }, 600);
     };
     cleanups.push(() => {
       clearTimeout(loadingTimer);
-      loadingScene?.dispose();
-      loadingCanvas.remove();
+      abort.abort();
+      cancelAnimationFrame(raf);
     });
 
     (async () => {
       const gl = canvas.getContext("webgl2", {
         antialias: false, // shader output is already dithered; MSAA is useless
-        preserveDrawingBuffer: true, // PNG capture + screenshot harness
+        alpha: false,
+        depth: false,
+        stencil: false,
+        preserveDrawingBuffer: false, // capture is requested inside the drawing frame
       });
       if (!gl) {
         endLoadingScreen();
         statsEl.textContent = "WebGL2 unavailable in this browser.";
         return;
       }
+      on(canvas, "webglcontextlost", (event: Event) => {
+        event.preventDefault();
+        contextLost = true;
+        abort.abort();
+        cancelAnimationFrame(raf);
+        endLoadingScreen();
+        statsEl.textContent = "Graphics context lost. Reload to restart the renderer.";
+      });
 
-      loadingNote("fetching orbital tables", 0);
+      loadingNote("fetching orbital catalog", 0.1);
       const [asset, palettes] = await Promise.all([
-        // LOADING_ASSET_BYTES is the asset's size at bake time; clamp in case
-        // a re-bake changed it without regenerating the loading module.
-        loadHorb("generated/orbitals.bin", (bytes) => {
-          const done = Math.min(1, bytes / LOADING_ASSET_BYTES);
-          loadingNote(`orbital tables · ${Math.round(100 * done)}%`, done);
-        }),
+        loadHorbIndex("generated/orbitals.json", abort.signal),
         loadPalettes("generated/palettes.json"),
       ]);
-      loadingNote("compiling shaders", 1);
+      if (disposed || contextLost) return;
+      loadingNote("preparing selected state", 0.5);
       const renderer = await OrbitalRenderer.create(gl, asset, palettes, "generated/shaders");
-      if (disposed) return;
+      if (disposed || contextLost) { renderer.dispose(); return; }
+      cleanups.push(() => renderer.dispose());
 
       const params = defaultParams();
       applyUrlOverrides(params, location.search, asset.nMax);
@@ -1031,22 +1027,43 @@ export default function OrbitalViewer() {
       // frames stall and back up when there is headroom. Never touches the
       // user's slider; skipped for the path tracer (resolution changes reset
       // its accumulation) and for fixed-size shots.
-      let qualityMul = 1;
+      const initialPixels = canvas.clientWidth * canvas.clientHeight
+        * (devicePixelRatio * params.renderScale) ** 2;
+      let qualityMul = params.autoQuality && !fixedSize
+        ? Math.min(1, Math.sqrt(250_000 / Math.max(1, initialPixels))) : 1;
       let governAge = 0;
       const govern = (dt: number, emaMs: number) => {
         if (!params.autoQuality || fixedSize || captureActive) return;
         if (params.view === "volume" && params.technique === "pathtrace") return;
         if ((governAge += dt) < 0.5) return;
         governAge = 0;
-        if (emaMs > 45 && qualityMul > 0.3) qualityMul = Math.max(0.3, qualityMul * 0.8);
-        else if (emaMs < 15 && qualityMul < 1) qualityMul = Math.min(1, qualityMul / 0.8);
+        if (emaMs > 20 && qualityMul > 0.125)
+          qualityMul = Math.max(0.125, qualityMul * (emaMs > 50 ? 0.6 : 0.85));
+        else if (emaMs < 18 && qualityMul < 1) {
+          // Slow recovery avoids bouncing resolution every half-second.
+          qualityMul = Math.min(1, qualityMul * 1.025);
+        }
       };
 
       // ---------------------------------------------------------- the loop
+      const viewportLimit = gl.getParameter(gl.MAX_VIEWPORT_DIMS) as Int32Array;
+      const dimensionLimit = Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE),
+        gl.getParameter(gl.MAX_RENDERBUFFER_SIZE), viewportLimit[0], viewportLimit[1]);
       const resize = (captureScale?: number) => {
         const s = captureScale ?? params.renderScale * qualityMul;
-        const w = fixedSize ?? Math.max(16, Math.round(canvas.clientWidth * devicePixelRatio * s));
-        const h = fixedSize ?? Math.max(16, Math.round(canvas.clientHeight * devicePixelRatio * s));
+        let w = fixedSize ?? Math.max(16, Math.round(canvas.clientWidth * devicePixelRatio * s));
+        let h = fixedSize ?? Math.max(16, Math.round(canvas.clientHeight * devicePixelRatio * s));
+        // Bound screen-space allocations before the first draw. Eight-times
+        // SSAA on a high-DPI 4K display otherwise requests gigabytes, before a
+        // frame-time governor has any opportunity to react.
+        let bytesPerPixel = 8; // canvas + compositor
+        if (params.view === "volume" && params.technique === "pathtrace") bytesPerPixel += 32;
+        if (params.flowEnabled) bytesPerPixel += params.flowMethod === "ink" ? 8 : 16;
+        if (params.postEnabled) bytesPerPixel += 4 + (params.bloomEnabled ? 8 * params.bloomScale ** 2 : 0);
+        const pixelBudget = Math.min(8_388_608, Math.floor(128 * 1024 * 1024 / bytesPerPixel));
+        const fit = Math.min(1, dimensionLimit / w, dimensionLimit / h,
+          Math.sqrt(pixelBudget / (w * h)));
+        if (fit < 1) { w = Math.max(16, Math.floor(w * fit)); h = Math.max(16, Math.floor(h * fit)); }
         if (canvas.width !== w || canvas.height !== h) {
           canvas.width = w;
           canvas.height = h;
@@ -1089,9 +1106,10 @@ export default function OrbitalViewer() {
       let fixedFlowFrames = 0;
       let emaMs = 0;
       let statsAge = 0;
-      const loop = (tMs: number) => {
-        if (disposed) return;
-        const dt = Math.min((tMs - lastT) / 1000, 0.1);
+      const frame = (tMs: number) => {
+        if (disposed || contextLost) return;
+        const frameMs = Math.max(0, tMs - lastT);
+        const dt = Math.min(frameMs / 1000, 0.1);
         lastT = tMs;
         if (captureRequested && !captureActive) {
           captureRequested = false;
@@ -1126,12 +1144,45 @@ export default function OrbitalViewer() {
             ? coefficientsAt(effTerms, params.simTime, params.superNormalize)
             : null;
 
+        const tables = asset.ensureTables?.([{ n: params.n, l: params.l, m: params.m }, ...effTerms]);
+        if (tables) {
+          statsEl.textContent = "fetching selected orbital tables…";
+          tables.then(() => {
+            if (!disposed && !contextLost) { lastT = performance.now(); raf = requestAnimationFrame(loop); }
+          }).catch(fail);
+          return;
+        }
+
         const flowIsVolume = (FLOW_VOLUME_METHODS as readonly string[])
           .includes(params.flowMethod);
         const flowIsParticles = params.flowMethod !== "ink" && !flowIsVolume;
         const flowSupported = !flowIsParticles || renderer.floatRenderable;
         const flowCompatible = flowSupported
           && (params.view === "slice") === (params.flowMethod === "ink");
+        const preparing = renderer.prepare({
+          view: params.view,
+          technique: params.technique,
+          integrator: params.technique === "pathtrace" || params.technique === "eikonal"
+            ? -1 : INTEGRATOR[params.technique],
+          shadeModel: SHADE_MODEL[params.shadeModel],
+          superposition: effTerms.length > 0,
+          axes: params.axes,
+          flow: !params.flowEnabled || !flowCompatible ? "none"
+            : params.flowMethod === "ink" ? "ink" : flowIsVolume ? "volume" : "particles",
+          derivative: FLOW_DERIVATIVE[params.flowDerivative],
+          flowIntegrator: FLOW_INTEGRATOR[params.flowIntegrator],
+          correction: params.flowVolumeCorrection > 0,
+          post: params.postEnabled,
+          bloom: params.bloomEnabled && params.bloomIntensity > 0,
+        });
+        if (preparing) {
+          loadingNote("compiling selected shaders", 0.8);
+          statsEl.textContent = "compiling selected shaders…";
+          preparing.then(() => {
+            if (!disposed && !contextLost) { lastT = performance.now(); raf = requestAnimationFrame(loop); }
+          }).catch(fail);
+          return;
+        }
         const common: CommonParams = {
           n: params.n,
           l: params.l,
@@ -1505,7 +1556,7 @@ export default function OrbitalViewer() {
         if (fixedSize && params.flowEnabled && params.flowRun && flowCompatible)
           fixedFlowFrames += 1;
 
-        emaMs = emaMs === 0 ? dt * 1000 : emaMs * 0.9 + dt * 1000 * 0.1;
+        emaMs = emaMs === 0 ? frameMs : emaMs * 0.9 + frameMs * 0.1;
         if ((statsAge += dt) > 0.25) {
           statsAge = 0;
           if (!fixedSize) syncUrl();
@@ -1571,14 +1622,20 @@ export default function OrbitalViewer() {
         const converging = pathConverging || flowConverging;
         if (!fixedSize || !converging)
           (window as unknown as { __renderReady?: boolean }).__renderReady = true;
-        if (!fixedSize || converging) requestAnimationFrame(loop);
+        if (!fixedSize || converging) raf = requestAnimationFrame(loop);
       };
-      requestAnimationFrame(loop);
-    })().catch((err) => {
+      const loop = (tMs: number) => {
+        try { frame(tMs); } catch (err) { fail(err); }
+      };
+      raf = requestAnimationFrame(loop);
+    })().catch(fail);
+
+    function fail(err: unknown) {
+      if (disposed || contextLost) return;
       console.error(err);
       endLoadingScreen();
       statsEl.textContent = `failed to start: ${err}`;
-    });
+    }
 
     return () => {
       disposed = true;
@@ -1594,21 +1651,6 @@ export default function OrbitalViewer() {
         loading tables + shaders…
       </div>
       <div ref={flowLegendRef} className="flow-legend" hidden />
-      {/* Loading screen: its own renderer + baked data (lib/loading-scene.ts),
-          covering the app until the first real frame is on the canvas. */}
-      <div ref={loadingRef} className="loading">
-        {/* the canvas is prepended here by the effect */}
-        <div className="loading-caption">
-          <div className="loading-title">hydrogen</div>
-          <div className="loading-state">|1,0,0⟩ + |2,1,0⟩ · e^(−iEₙt)</div>
-          <div className="loading-bar">
-            <i ref={loadingBarRef} />
-          </div>
-          <div ref={loadingNoteRef} className="loading-note">
-            starting
-          </div>
-        </div>
-      </div>
     </>
   );
 }

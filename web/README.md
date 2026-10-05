@@ -15,42 +15,33 @@ npm run build
 
 `scripts/sync-assets.mjs`, invoked before development and production builds,
 copies `../assets/orbitals.bin`, `../assets/palettes.json`, and `../shaders/`
-into `public/generated/`. The production build is a static export in `out/`.
+into `public/generated/`. It also generates a compact orbital catalog and
+650 individual table files, copied byte-for-byte from the certified bake.
+The production build is a static export in `out/`.
 
 ## Loading screen
 
-`orbitals.bin` is 16 MB, so on a slow connection the app has nothing to show
-for a minute or more. `lib/loading-scene.ts` fills that window with the
-renderer's own output rather than a spinner: the time-evolving
-|1,0,0⟩ + |2,1,0⟩ superposition, isosurface-integrated and bloomed, viewed
-pole-on — the scene of
+`components/LoadingScreen.tsx` is prerendered into the initial HTML. Its
+caption, background, and progress bar appear before the viewer's JavaScript
+loads, and its 6 KB WebP poster is a still of the original orbital scene.
+Loading does not create a second WebGL context, compile shaders, or raymarch
+an isosurface. The original miniature renderer and its table-bake script
+remain available in `lib/loading-scene.ts` and `scripts/bake-loading.mjs`
+as reference material; neither is imported by the application.
 
-```text
-?terms=1,0,0;2,1,0&time=1&timeScale=4&mode=real&color=signed&compress=asinh
-&ramp=custom&post=1&integrator=iso&shadeModel=ggx&camera=90,89,1.65
-```
+The viewer fetches a ~448 KB catalog and the selected state's 48 KB of
+tables, instead of downloading the full 16 MB asset. Superpositions fetch
+only their required tables. Shared tables and concurrent requests are cached;
+changing quantum numbers fetches any missing tables while retaining the last
+presented image. No tables are resampled or approximated.
 
-It is self-contained: one hard-coded fragment shader specialized to that URL
-(every parameter folded in as a GLSL constant, every unused branch removed),
-the three post passes, a ~250-line WebGL2 driver, and its own miniature asset.
-`scripts/bake-loading.mjs` produces that asset — `lib/loading-asset.ts`, the
-two radial and two angular tables the scene needs, resampled from the certified
-bake to 512 and 128 samples and inlined as base64 Float32 (~7 KB, worst
-residual 8e-5 of table peak). Nothing is fetched, and the whole package adds
-~14 KB gzipped to the viewer chunk, so the screen is drawing about two seconds
-into a 3 Mbit/s cold load that takes 75 seconds to complete.
-
-Because it is a specialization rather than a reimplementation, its picture
-matches the app's: rendered side by side at equal simulated time, mean absolute
-difference is 0.35/255 per channel, confined to shell silhouettes (the
-low-resolution tables) — below the output dither.
-
-Re-run the bake after re-baking `../assets/orbitals.bin`; the generated module
-is committed.
-
-```sh
-npm run bake:loading
-```
+`lib/programs.ts` fetches and asynchronously compiles only the programs
+needed by the selected technique, enabled flow, and enabled post effects.
+Discrete integrator, shading, and derivative choices become shader constants
+so unused branches disappear. The single-state variant also removes the
+superposition branch. Compiled variants use a bounded LRU cache. Async linking
+uses `KHR_parallel_shader_compile` where supported, following the
+[WebGL extension contract](https://registry.khronos.org/webgl/extensions/KHR_parallel_shader_compile/).
 
 ## Interface
 
@@ -205,8 +196,10 @@ Keyboard controls:
 
 `renderScale` controls the live canvas backing store relative to CSS pixels
 and device pixel ratio. Values below one improve responsiveness; values above
-one provide supersampled antialiasing. The optional quality governor lowers
-only the live scale when frame time rises.
+one provide supersampled antialiasing. The optional quality governor starts
+large views conservatively and adjusts resolution toward a 60 FPS frame
+budget. It uses actual frame intervals, including long stalls, rather than
+the simulation's clamped time step.
 
 PNG capture has independent settings:
 
@@ -220,7 +213,39 @@ While capturing, time is frozen and transport advances at a fixed 1/60-second
 step. The renderer exports only after the selected convergence/history target,
 then restores the interactive backing-store size on the next frame. A
 `size=N` screenshot-harness URL remains authoritative over both live and
-capture scale.
+capture scale, within GPU limits. All modes preserve aspect ratio while
+limiting screen-space targets to 128 MiB and at most 8 megapixels. This protects
+high-DPI displays from multi-gigabyte allocations at 8× SSAA. The actual
+render/capture dimensions appear in the stats and PNG filename.
+
+Resizing path tracing releases its previous accumulation buffers. Disabling
+flow or post processing releases their targets; unmounting releases every
+renderer-owned program, table texture, and framebuffer.
+
+## Performance and regression checks
+
+Run these against a production export served locally. GPU results depend on
+the driver and selected scene; software-rendered Chromium is a separate case.
+
+```sh
+npm run build
+npm run check:assets
+# In another terminal: python3 -m http.server 3003 --directory out
+npm run check:renderer
+PERF_BASE=http://localhost:3003 PERF_GPU=1 npm run perf -- "scale=0.25"
+```
+
+The asset check compares every table and statistic to the original HORB bake,
+and checks signed-m caching and concurrent-request deduplication. The browser
+check covers all analytic techniques, superpositions, n=25, every flow method,
+post processing, axes, clipping, repeated path-trace resize, and PNG capture.
+`CHECK_REFERENCE=<original-export-URL>` additionally compares rendered pixels
+against an unchanged build. `CHECK_SOFTWARE=1` selects SwiftShader.
+
+The performance probe reports startup, compiled-program/context counts,
+context loss, blocking shader queries, and median/p95 frame intervals over
+ten seconds after warm-up. Its default backend is SwiftShader; `PERF_GPU=1`
+requests hardware acceleration and reports the actual renderer used.
 
 ## URLs and automated screenshots
 
@@ -259,11 +284,13 @@ real GPU path.
 
 - `components/OrbitalViewer.tsx` — application orchestration, lil-gui,
   interaction, render loop, and capture lifecycle.
+- `components/LoadingScreen.tsx` — initial HTML loading shell.
 - `lib/params.ts` — typed user-facing state and URL codec.
 - `lib/presets.ts` — curated preset catalog and application logic.
 - `lib/panels.ts` — preset, superposition, palette, and help overlays.
 - `lib/renderer.ts` — WebGL resources, shader assembly, flow state, and draw
   passes.
+- `lib/programs.ts` — lazy asynchronous shader variants and bounded cache.
 - `lib/superposition.ts` — term validation, coefficients, and time evolution.
 - `lib/scene.ts`, `lib/cameras.ts` — plane geometry and navigation.
 - `lib/horb.ts`, `lib/palettes.ts`, `lib/color.ts` — assets and perceptual
