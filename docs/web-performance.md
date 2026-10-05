@@ -1,5 +1,9 @@
 # Web performance investigation
 
+## Startup cleanup baseline
+
+These results describe the startup cleanup before the animated loader below.
+
 Measured locally in production Chromium/ANGLE on Intel UHD Graphics 770,
 1600×900 CSS pixels, DPR 1, render scale 0.25. These measurements do not
 establish performance on the reported A5000 workstation or Chromebook.
@@ -23,7 +27,8 @@ scenes also sustained ~16.7 ms median and p95 frame intervals at scale 0.25.
 They initialized in ~0.45–0.58 seconds. These are scene-specific results,
 not a promise of 60 FPS at arbitrary supersampling or solver settings.
 
-The loading shell is static HTML/CSS with a 6 KB still of the original scene.
+At that stage, the loading shell was static HTML/CSS with a 6 KB still of the
+original scene.
 It appeared in ~0.08–0.10 seconds on localhost, including with JavaScript
 disabled. At an emulated 3 Mbit/s and 80 ms latency, first content appeared
 in ~0.32 seconds and the app rendered in ~3.74 seconds. The runtime data,
@@ -63,3 +68,47 @@ interpreted as software-renderer performance guarantees.
 
 See [web/README.md](../web/README.md#performance-and-regression-checks) for
 the reproducible asset, rendering, comparison, and performance commands.
+
+## Accepted animated loader (2026-10-05)
+
+The current stable loader renders the original equal-amplitude 1s + 2p₀
+superposition with direct basis formulas, the original camera, intersecting
+projected isosurfaces, signed color sequence, lighting, and bloom. Its complete
+color/geometry cycle lasts 12.56637 seconds. The backdrop matches the black
+page; the orbital palette is independent of that backdrop.
+
+The inline runtime is approximately 6.7 KB gzipped, with no loader asset
+requests. It draws before framework JavaScript loads, then hands animation to
+an OffscreenCanvas worker. Rendering is capped at 256² pixels. The viewer waits
+for the handoff for at most 250 ms. The shared app stylesheet stays separate.
+Worker and GL resources are released after loading. The former still asset
+has been removed.
+
+On the same Intel/Chromium setup, the live loader presented 42 changing frames
+during a deliberate 700 ms main-thread CPU stall, with maximum frame gaps under
+19 ms. A 16-phase comparison to the archived table-based renderer measured
+maximum mean channel error below 0.025/255 at equal resolution. Cold heavy main
+shader compilation still caused roughly 300–450 ms presentation pauses; warm
+compilation was much smoother. These are local measurements, not universal
+device guarantees. The user accepted this live implementation as the stable
+point, with the remaining cold compilation pause understood.
+
+## Deferred: ahead-of-time loader playback
+
+Investigate rendering ahead, or baking the complete physical loop at build
+time or on an edge server, then playing it without a live GL context. This
+follow-up is deferred until after the accepted live loader; no AoT playback is
+implemented in this stable point.
+
+Compare actual presentation during cold main-viewer compilation, first-frame
+latency, compressed payload, decode/raster/upload work, and memory use against
+the live worker loader. Removing loader GL does not establish that a shared
+graphics-driver pause disappears: the earlier compositor-only CSS study also
+paused during cold compilation. Measure playback after its frames are ready.
+
+Preserve the confirmed intersecting structure and full signed color sequence,
+and the defensible claim that this is the same superposition animated. A baked
+loop must remain smooth, immediately visible, and lightweight enough to justify
+its network cost. Respect the 250 ms extra startup allowance and keep the shared
+stylesheet separate. Reconsider shader specialization separately if it adds
+recompilation when display settings change.

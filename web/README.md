@@ -21,13 +21,67 @@ The production build is a static export in `out/`.
 
 ## Loading screen
 
-`components/LoadingScreen.tsx` is prerendered into the initial HTML. Its
-caption, background, and progress bar appear before the viewer's JavaScript
-loads, and its 6 KB WebP poster is a still of the original orbital scene.
-Loading does not create a second WebGL context, compile shaders, or raymarch
-an isosurface. The original miniature renderer and its table-bake script
-remain available in `lib/loading-scene.ts` and `scripts/bake-loading.mjs`
-as reference material; neither is imported by the application.
+`components/LoadingScreen.tsx` includes critical loader CSS and a small classic
+script in the initial HTML. The script draws the original orbital immediately,
+then hands animation to a WebGL2 OffscreenCanvas worker so GUI construction and
+other main-thread JavaScript do not freeze it. There are no loader image, video,
+table, shader, or extra JavaScript network requests. The shared app stylesheet
+remains a separate render-blocking request, as requested; first paint still
+waits for it. The runtime is approximately 6.7 KB gzipped, and the complete
+loader markup/styles are approximately 7.5 KB gzipped.
+
+`lib/loading-orbital.ts` specializes the archived `lib/loading-scene.ts`
+reference. It evaluates the same normalized, equal-amplitude
+`|1,0,0⟩ + |2,1,0⟩` superposition directly, without lookup textures:
+
+```text
+a(r) = exp(-r) / sqrt(pi)
+b(r,z) = z exp(-r/2) / (4 sqrt(2 pi))
+psi(r,z,t) = [a(r) exp(i t/2) + b(r,z) exp(i t/8)] / sqrt(2)
+```
+
+It retains the reference's perspective camera at 89° elevation, three density
+isosurfaces, signed real-wavefunction OKLab color mapping, finite-difference
+normals, GGX lighting, shadows, and bloom. The backdrop matches the black page
+without changing the orbital palette. In atomic units `E_n = -1/(2n²)`;
+at 4 au/s the density alone repeats after 4.18879 seconds, while the complete
+signed color and geometry cycle repeats after 12.56637 seconds. Discarding the
+wavefunction's sign would lose the original color sequence and internal
+structure. The direct basis formulas closely match the reference's interpolated
+Float32 tables: a 16-phase comparison at equal 256² resolution measured a
+maximum mean absolute channel error below 0.025 on a 0–255 scale.
+The comparison gives the archived reference the same black backdrop.
+
+The approximation is the rendering budget: at most 256² pixels, with the
+reference's 64-step raymarch and bisection-refined surfaces. Slow devices can
+reduce resolution further. Bootstrap and worker share a wall-clock phase
+origin, preventing a reset at handoff. The bootstrap context is released when
+the worker presents its first frame. The worker releases resources when the
+loader becomes hidden or is removed, and on page exit. Reduced-motion preference
+shows one real orbital frame; browsers without the worker path keep the
+main-thread live renderer. Viewer initialization waits for worker readiness
+for at most the approved 250 ms.
+
+`npm run bake:loading-runtime` compiles/minifies the self-contained factory and
+`scripts/loading-bootstrap.js` into `lib/loading-runtime.ts`; development and
+production builds regenerate it automatically. The generated code includes
+neither the baked lookup arrays nor third-party runtime dependencies.
+
+`npm run check:loading` against a production export checks animation before
+framework JavaScript arrives, zero image/video requests, moving compositor
+filmstrip frames through a 700 ms main-thread stall, mobile/reduced-motion and
+worker fallback behavior, actual viewer startup/hydration, and context/worker
+cleanup. It reports main-shader compilation gaps including interval edges;
+these are measurements, not a claim of guaranteed smooth cold compilation.
+`npm run check:loading-reference` independently samples 16 phases against the
+archived table-based renderer and writes `.shots/loading-cycle-comparison.png`.
+Use `MESA_SHADER_CACHE_DISABLE=true npm run check:loading` to expose cold driver
+compilation on Mesa. The Intel/OpenGL test setup still pauses presentation
+roughly 300–450 ms on a cold heavy superposition shader, even with the loader
+in a worker. The accepted stable version keeps the live loader; ahead-of-time
+playback and shader-specialization tradeoffs are recorded for later in
+[the performance notes](../docs/web-performance.md#deferred-ahead-of-time-loader-playback).
+Screenshots and a standalone animated preview are written to `.shots/`.
 
 The viewer fetches a ~448 KB catalog and the selected state's 48 KB of
 tables, instead of downloading the full 16 MB asset. Superpositions fetch
@@ -40,7 +94,8 @@ needed by the selected technique, enabled flow, and enabled post effects.
 Discrete integrator, shading, and derivative choices become shader constants
 so unused branches disappear. The single-state variant also removes the
 superposition branch. Compiled variants use a bounded LRU cache. Async linking
-uses `KHR_parallel_shader_compile` where supported, following the
+enables `KHR_parallel_shader_compile` before submitting shaders where
+supported, following the
 [WebGL extension contract](https://registry.khronos.org/webgl/extensions/KHR_parallel_shader_compile/).
 
 ## Interface
@@ -295,5 +350,9 @@ real GPU path.
 - `lib/scene.ts`, `lib/cameras.ts` — plane geometry and navigation.
 - `lib/horb.ts`, `lib/palettes.ts`, `lib/color.ts` — assets and perceptual
   color support.
-- `lib/loading-scene.ts`, `lib/loading-asset.ts` — the standalone loading
+- `lib/loading-orbital.ts`, `lib/loading-runtime.ts` — live physics-based loader
+  and its generated inline runtime (`scripts/bake-loading-runtime.mjs`).
+- `scripts/loading-bootstrap.js` — immediate first frame, worker handoff, and
+  cleanup; `scripts/check-loading*.mjs` — startup and reference checks.
+- `lib/loading-scene.ts`, `lib/loading-asset.ts` — the original standalone loading
   screen and its baked tables (`scripts/bake-loading.mjs`).

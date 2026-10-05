@@ -4,15 +4,18 @@
   "private": true,
   "description": "Interactive hydrogen-orbital and probability-current visualizer over the shared GLSL ES renderer.",
   "scripts": {
-    "predev": "node scripts/sync-assets.mjs",
+    "predev": "node scripts/sync-assets.mjs && node scripts/bake-loading-runtime.mjs",
     "dev": "next dev",
-    "prebuild": "node scripts/sync-assets.mjs",
+    "prebuild": "node scripts/sync-assets.mjs && node scripts/bake-loading-runtime.mjs",
     "build": "next build",
     "bake:loading": "node scripts/bake-loading.mjs",
     "shot": "node scripts/shot.mjs",
     "perf": "node scripts/perf.mjs",
     "check:renderer": "node scripts/check-renderer.mjs",
-    "check:assets": "node --experimental-strip-types scripts/check-assets.mjs"
+    "check:loading": "node scripts/check-loading.mjs",
+    "check:assets": "node --experimental-strip-types scripts/check-assets.mjs",
+    "bake:loading-runtime": "node scripts/bake-loading-runtime.mjs",
+    "check:loading-reference": "node scripts/check-loading-reference.mjs"
   },
   "dependencies": {
     "lil-gui": "^0.20.0",

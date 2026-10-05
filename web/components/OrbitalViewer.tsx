@@ -135,6 +135,20 @@ export default function OrbitalViewer() {
     });
 
     (async () => {
+      // Let the worker take over before GUI and viewer GL work. Startup pacing
+      // is bounded by the user's 250 ms allowance, including a failed worker.
+      const loader = (window as Window & {
+        __hydrogenLoader?: { ready: Promise<void> };
+      }).__hydrogenLoader;
+      if (loader) {
+        let timeout: number | undefined;
+        await Promise.race([
+          loader.ready,
+          new Promise<void>((resolve) => { timeout = window.setTimeout(resolve, 250); }),
+        ]);
+        clearTimeout(timeout);
+      }
+      if (disposed || contextLost) return;
       const gl = canvas.getContext("webgl2", {
         antialias: false, // shader output is already dithered; MSAA is useless
         alpha: false,

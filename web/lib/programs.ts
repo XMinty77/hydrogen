@@ -31,7 +31,11 @@ export class Programs {
   private signature = "";
   private disposed = false;
 
-  constructor(private readonly gl: WebGL2RenderingContext, private readonly base: string) {}
+  constructor(private readonly gl: WebGL2RenderingContext, private readonly base: string) {
+    // Enable asynchronous completion polling before the first submission.
+    // TWGL also discovers this extension when it starts polling after link.
+    gl.getExtension("KHR_parallel_shader_compile");
+  }
 
   private source(file: string) {
     let result = this.sources.get(file);
